@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "383562417319",
+    "project_id": "hostel-acc38",
+    "storage_bucket": "hostel-acc38.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:383562417319:android:4b2fb3d866215e7a6ec782",
+        "android_client_info": {
+          "package_name": "com.example.helloworld"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD6yCupF_pEW1FvLt0EaluLqyGcuf14bQs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

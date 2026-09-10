@@ -1,0 +1,15 @@
+{
+  "name": "homihostel-admin-tools",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Admin-SDK scripts for bulk student import and cleanup. Run from your own machine; not part of the Flutter app.",
+  "scripts": {
+    "import": "node import-students.js",
+    "delete": "node delete-students.js",
+    "backup": "node backup-firestore.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.2"
+  }
+}

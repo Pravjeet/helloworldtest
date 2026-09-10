@@ -1,0 +1,62 @@
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "hostel-acc38",
+          "appId": "1:383562417319:android:4b2fb3d866215e7a6ec782",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "hostel-acc38",
+          "configurations": {
+            "android": "1:383562417319:android:4b2fb3d866215e7a6ec782",
+            "ios": "1:383562417319:ios:dc63642170dcbcaf6ec782",
+            "macos": "1:383562417319:ios:dc63642170dcbcaf6ec782",
+            "web": "1:383562417319:web:33924bc9bc5107076ec782",
+            "windows": "1:383562417319:web:ff2558e47cdcd5206ec782"
+          }
+        }
+      }
+    }
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "hosting": {
+    "public": "build/web",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ],
+    "headers": [
+      {
+        "source": "**",
+        "headers": [
+          {
+            "key": "X-Robots-Tag",
+            "value": "noindex, nofollow"
+          }
+        ]
+      }
+    ]
+  },
+  "emulators": {
+    "firestore": {
+      "port": 8080
+    },
+    "ui": {
+      "enabled": false
+    }
+  }
+}

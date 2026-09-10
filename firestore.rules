@@ -1,0 +1,581 @@
+rules_version = '2';
+
+// =====================================================================
+// Homi Hostel security rules
+//
+// Deploy with:  firebase deploy --only firestore:rules
+//
+// Guiding principle: the client UI hides things, but these rules are what
+// actually enforces them. Anyone can call the Firestore REST API directly,
+// so every permission check in the app is repeated here.
+// =====================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------------- helpers ----------------
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function me() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function myCollege() {
+      return me().collegeId;
+    }
+
+    function isActive() {
+      return me().get('isActive', true) == true;
+    }
+
+    function isSuperAdmin() {
+      return signedIn() && me().get('isSuperAdmin', false) == true;
+    }
+
+    // Reads the caller's role doc and checks a single permission string.
+    function hasPerm(perm) {
+      return signedIn() && isActive() && (
+        isSuperAdmin() ||
+        (
+          me().get('roleId', null) != null &&
+          perm in get(
+            /databases/$(database)/documents/colleges/$(myCollege())/roles/$(me().roleId)
+          ).data.get('permissions', [])
+        )
+      );
+    }
+
+    function sameCollege(collegeId) {
+      return signedIn() && myCollege() == collegeId;
+    }
+
+    // Fields a user is allowed to change on their *own* profile. Notably
+    // absent: role, collegeId, isSuperAdmin, isActive — otherwise anyone
+    // could promote themselves to Super Admin.
+    function onlySelfEditableFields() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasOnly(['name', 'phone', 'gender', 'email', 'updatedAt']);
+    }
+
+    // The only user/enrollment fields an allotment write may touch. Someone
+    // holding allotment.manage can put a student in a room, but cannot
+    // rename them, change their role, or reactivate a disabled account —
+    // and, on an enrollment, cannot touch the year or anything else
+    // backfill/promotion own.
+    //
+    // 'roomCapacity' only ever appears on an enrollment (see
+    // AllotmentService.allot/vacate) — it's harmless to allow on a users/{uid}
+    // write too, since nothing ever writes it there, and one shared list is
+    // what keeps the two allotment paths from silently drifting apart.
+    function onlyAllotmentFields() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasOnly(['hostelId', 'hostelName', 'roomId', 'roomNumber',
+                  'roomCapacity', 'allottedAt', 'updatedAt']);
+    }
+
+    // ---------------- colleges ----------------
+
+    match /colleges/{collegeId} {
+      // Anyone in the college may read its name; only the owner may change it.
+      allow read: if sameCollege(collegeId);
+
+      // Creation happens during registration: the caller must be naming
+      // themselves as owner. The matching users/{uid} doc is written in the
+      // same batch.
+      allow create: if signedIn()
+                    && request.resource.data.ownerUid == request.auth.uid;
+
+      allow update: if isSuperAdmin() && sameCollege(collegeId);
+      allow delete: if false; // never from the client
+
+      // ---------------- roles ----------------
+
+      match /roles/{roleId} {
+        // Everyone in the college can read roles — the app needs the caller's
+        // own role doc to know what they may do.
+        allow read: if sameCollege(collegeId);
+
+        // Bootstrap: during registration the starter roles are written in the
+        // SAME batch that creates the college. Batched writes are evaluated
+        // against the PRE-batch state, so the college document does not exist
+        // yet and we cannot look up its owner. We therefore allow the write
+        // only while the college is still being created — the collegeId is a
+        // random, unguessable slug, and the accompanying users/{uid} write is
+        // what actually binds the workspace to its owner.
+        allow create: if signedIn() && (
+                        !exists(/databases/$(database)/documents/colleges/$(collegeId))
+                        || (sameCollege(collegeId) && hasPerm('roles.manage'))
+                      );
+
+        // The system role is immutable, and no role may grant permissions
+        // the editor doesn't already hold (no privilege escalation).
+        allow update: if sameCollege(collegeId)
+                      && hasPerm('roles.manage')
+                      && resource.data.get('isSystem', false) == false
+                      && request.resource.data.get('isSystem', false) == false;
+
+        allow delete: if sameCollege(collegeId)
+                      && hasPerm('roles.manage')
+                      && resource.data.get('isSystem', false) == false;
+      }
+    }
+
+    // ---------------- users ----------------
+
+    match /users/{userId} {
+
+      // You can always read yourself (the app needs this before it knows
+      // your college). Otherwise you need users.view and a matching college.
+      allow get: if signedIn() && (
+                   request.auth.uid == userId ||
+                   (sameCollege(resource.data.collegeId) && hasPerm('users.view'))
+                 );
+
+      // For `list`, rules are evaluated per candidate document, so this both
+      // requires the permission AND makes it impossible to read users from
+      // another institution even if the client drops its where-clause.
+      allow list: if signedIn()
+                  && hasPerm('users.view')
+                  && resource.data.collegeId == myCollege();
+
+      // Two legitimate creates:
+      //  1. Registration — the caller creates their own SuperAdmin profile.
+      //  2. Provisioning — an admin with users.create adds someone to their
+      //     own college. (The doc is written by the admin's session, while
+      //     the Auth account is created on a secondary app instance.)
+      allow create: if signedIn() && (
+                      (
+                        request.auth.uid == userId &&
+                        request.resource.data.isSuperAdmin == true &&
+                        request.resource.data.collegeId is string
+                      ) || (
+                        hasPerm('users.create') &&
+                        request.resource.data.collegeId == myCollege() &&
+                        request.resource.data.get('isSuperAdmin', false) == false
+                      )
+                    );
+
+      allow update: if signedIn() && (
+                      // Editing yourself: safe fields only.
+                      (request.auth.uid == userId && onlySelfEditableFields())
+                      ||
+                      // Admin editing someone else in the same college.
+                      (
+                        request.auth.uid != userId &&
+                        hasPerm('users.edit') &&
+                        resource.data.collegeId == myCollege() &&
+                        request.resource.data.collegeId == myCollege() &&
+                        // Nobody may create or demote a Super Admin here.
+                        resource.data.get('isSuperAdmin', false) == false &&
+                        request.resource.data.get('isSuperAdmin', false) == false
+                      )
+                      ||
+                      // Allotment: writing the room fields onto a student.
+                      // Deliberately narrower than users.edit — a warden who
+                      // can fill beds still can't rename or re-role anyone.
+                      (
+                        hasPerm('allotment.manage') &&
+                        resource.data.collegeId == myCollege() &&
+                        onlyAllotmentFields()
+                      )
+                    );
+
+      allow delete: if hasPerm('users.delete')
+                    && resource.data.collegeId == myCollege()
+                    && resource.data.get('isSuperAdmin', false) == false
+                    && request.auth.uid != userId;
+    }
+
+    // ---------------- hostels & rooms ----------------
+
+    match /colleges/{collegeId}/hostels/{hostelId} {
+      allow read: if sameCollege(collegeId) && hasPerm('hostels.view');
+
+      allow create, delete: if sameCollege(collegeId)
+                            && hasPerm('hostels.manage');
+
+      // hostels.manage can change anything; allotment.manage may only nudge
+      // the occupiedBeds counter, which the allot/vacate transaction does.
+      allow update: if sameCollege(collegeId) && (
+                      hasPerm('hostels.manage')
+                      || (
+                        hasPerm('allotment.manage')
+                        && request.resource.data.diff(resource.data)
+                             .affectedKeys().hasOnly(['occupiedBeds'])
+                      )
+                    );
+
+      // Rooms live under their hostel. Read access follows the hostel, but
+      // note the two different write permissions: editing the room *fabric*
+      // (capacity, features, status) is hostels.manage, whereas moving
+      // students in and out is allotment.manage — a warden may well be
+      // allowed to allot beds without being allowed to redefine the building.
+      match /rooms/{roomId} {
+        allow read: if sameCollege(collegeId) && (
+                      hasPerm('hostels.view') || hasPerm('allotment.manage')
+                    );
+
+        allow create, delete: if sameCollege(collegeId)
+                              && hasPerm('hostels.manage');
+
+        allow update: if sameCollege(collegeId) && (
+                        hasPerm('hostels.manage')
+                        || (
+                          hasPerm('allotment.manage')
+                          && request.resource.data.diff(resource.data)
+                               .affectedKeys().hasOnly(['occupantUids'])
+                        )
+                      );
+      }
+    }
+
+    // ---------------- mess ----------------
+    //
+    // Two fixed documents: `menu` and `config`. Everyone in the college who
+    // can see the mess may read both — the student fee calculator needs the
+    // rate, so it is deliberately not manager-only. Writes need mess.manage.
+
+    match /colleges/{collegeId}/mess/{docId} {
+      allow read: if sameCollege(collegeId) && hasPerm('mess.view');
+      allow write: if sameCollege(collegeId) && hasPerm('mess.manage');
+    }
+
+    // ---------------- requests ----------------
+
+    match /colleges/{collegeId}/requests/{requestId} {
+
+      // A single request: yours, or anyone's if you triage them.
+      allow get: if sameCollege(collegeId) && (
+                   resource.data.raisedByUid == request.auth.uid
+                   || hasPerm('requests.viewAll')
+                 );
+
+      // For list, rules run per candidate document. Someone with only
+      // viewOwn therefore cannot widen their query to read other people's
+      // complaints, even by dropping the where-clause client-side.
+      allow list: if sameCollege(collegeId) && (
+                    hasPerm('requests.viewAll')
+                    || (
+                      hasPerm('requests.viewOwn')
+                      && resource.data.raisedByUid == request.auth.uid
+                    )
+                  );
+
+      // You may only raise a request in your own name, and it must start
+      // pending — nobody self-approves.
+      allow create: if sameCollege(collegeId)
+                    && hasPerm('requests.create')
+                    && request.resource.data.raisedByUid == request.auth.uid
+                    && request.resource.data.status == 'pending';
+
+      // Deciding a request. The author is deliberately NOT allowed here:
+      // approving your own leave would be the whole point of the module
+      // defeated.
+      allow update: if sameCollege(collegeId)
+                    && hasPerm('requests.approve')
+                    && resource.data.raisedByUid != request.auth.uid
+                    && request.resource.data.raisedByUid
+                       == resource.data.raisedByUid
+                    && request.resource.data.status != 'pending';
+
+      // Withdrawing your own, but only while untouched.
+      // Staff who triage requests may also remove any request outright —
+      // needed to clear records left behind by a deleted author, which the
+      // clause above can never match (no author left to be, and often not
+      // pending).
+      allow delete: if sameCollege(collegeId) && (
+                      (resource.data.raisedByUid == request.auth.uid
+                       && resource.data.status == 'pending')
+                      || hasPerm('requests.approve')
+                    );
+    }
+
+    // ---------------- notices ----------------
+
+    match /colleges/{collegeId}/notices/{noticeId} {
+
+      // Anyone with notices.view can read any notice. Expired notices stay
+      // visible (they're just marked as archived client-side) so staff can
+      // see old announcements without querying a separate archive collection.
+      allow read: if sameCollege(collegeId)
+                     && hasPerm('notices.view');
+
+      // Only people with notices.manage can post a notice, and only in their
+      // own name — the author can't be spoofed.
+      allow create: if sameCollege(collegeId)
+                    && hasPerm('notices.manage')
+                    && request.resource.data.postedByUid
+                       == request.auth.uid;
+
+      // Only the creator or a Super Admin can delete.
+      allow delete: if sameCollege(collegeId)
+                    && (
+                      isSuperAdmin()
+                      || (
+                        hasPerm('notices.manage')
+                        && resource.data.postedByUid == request.auth.uid
+                      )
+                    );
+
+      // No updates — if you post wrong, delete and repost.
+    }
+
+    // ---------------- audit log ----------------
+    //
+    // Append-only from the client's point of view. Entries may be created by
+    // anyone acting in their own name, read by whoever runs the workspace,
+    // and updated ONLY to mark them undone — the record of what happened must
+    // not be editable after the fact, or it is not a record.
+    //
+    // Delete is allowed so the Danger Zone can clear test noise; that is a
+    // deliberate trade, and a real deployment should set it to `false`.
+
+    match /colleges/{collegeId}/auditLog/{entryId} {
+      allow read: if sameCollege(collegeId) && hasPerm('settings.manage');
+
+      allow create: if sameCollege(collegeId)
+                    && request.resource.data.actorUid == request.auth.uid;
+
+      // Only the three undo bookkeeping fields may ever change.
+      allow update: if sameCollege(collegeId)
+                    && hasPerm('settings.manage')
+                    && request.resource.data.diff(resource.data)
+                         .affectedKeys()
+                         .hasOnly(['undone', 'undoneAt', 'undoneByName']);
+
+      allow delete: if sameCollege(collegeId) && hasPerm('settings.manage');
+    }
+
+    // ---------------- settings ----------------
+    //
+    // One document, `config`. Everyone in the college may read it — the
+    // sidebar needs the institution name, the impose-fine form needs the
+    // category list, the shell needs the accent colour. Only settings.manage
+    // may write, and a workspace that has never saved simply has no document,
+    // which the client reads as "use the defaults".
+
+    match /colleges/{collegeId}/settings/{docId} {
+      allow read: if sameCollege(collegeId);
+      allow write: if sameCollege(collegeId) && hasPerm('settings.manage');
+    }
+
+    // ---------------- mess fees ----------------
+    //
+    // Status records, not payments. A row exists only for a student who has
+    // been marked paid, so absence means unpaid — which is why delete is a
+    // normal operation here rather than an exceptional one.
+
+    match /colleges/{collegeId}/feeRecords/{recordId} {
+
+      allow get: if sameCollege(collegeId) && (
+                   resource.data.studentUid == request.auth.uid
+                   || hasPerm('fees.viewAll')
+                 );
+
+      // Per-document evaluation on list, so viewOwn cannot be widened into
+      // reading who else has or hasn't paid.
+      allow list: if sameCollege(collegeId) && (
+                    hasPerm('fees.viewAll')
+                    || (
+                      hasPerm('fees.viewOwn')
+                      && resource.data.studentUid == request.auth.uid
+                    )
+                  );
+
+      // Recording must be in your own name — the audit trail is the only
+      // thing standing behind "the office says this was received".
+      allow create, update: if sameCollege(collegeId)
+                           && hasPerm('fees.manage')
+                           && request.resource.data.recordedByUid
+                              == request.auth.uid;
+
+      allow delete: if sameCollege(collegeId) && hasPerm('fees.manage');
+    }
+
+    // ---------------- fines ----------------
+
+    match /colleges/{collegeId}/fines/{fineId} {
+
+      // Your own fine, or anyone's if you run the register.
+      allow get: if sameCollege(collegeId) && (
+                   resource.data.studentUid == request.auth.uid
+                   || hasPerm('fines.viewAll')
+                 );
+
+      // Rules run per candidate document on a list, so someone holding only
+      // viewOwn cannot widen the query to read what everyone else owes.
+      allow list: if sameCollege(collegeId) && (
+                    hasPerm('fines.viewAll')
+                    || (
+                      hasPerm('fines.viewOwn')
+                      && resource.data.studentUid == request.auth.uid
+                    )
+                  );
+
+      // Imposing. Must be in your own name and must start unpaid — nobody
+      // files a fine as already settled. Every fine is issued under an office
+      // order (the two are written in the same batch by the app — see
+      // FineService.publishOfficeOrder), so officeOrderId is required too.
+      //
+      // This only checks the field is present, not that it points at a real
+      // document: a batch write can't `exists()`-check a sibling write still
+      // in the same batch, since rules evaluate each write against committed
+      // state, not the rest of the in-flight batch.
+      allow create: if sameCollege(collegeId)
+                    && hasPerm('fines.manage')
+                    && request.resource.data.imposedByUid == request.auth.uid
+                    && request.resource.data.status == 'pending'
+                    && request.resource.data.officeOrderId is string;
+
+      // Settling. The amount and who it is against are immutable — marking a
+      // fine paid must not be a back door to editing what was owed.
+      allow update: if sameCollege(collegeId)
+                    && hasPerm('fines.manage')
+                    && request.resource.data.studentUid
+                       == resource.data.studentUid
+                    && request.resource.data.amount == resource.data.amount
+                    && request.resource.data.status != 'pending';
+
+      // Deleting. The app itself only ever offers this for a fine raised in
+      // error (still pending) — FineService.remove enforces that in code —
+      // but the rule can't tell an accidental single delete apart from the
+      // two administrative bulk paths (FineService.deleteAll, used to reset
+      // test data, and FineService.deleteForStudent, run when the student's
+      // own account is deleted). Both of those must be able to clear settled
+      // fines too, so the rule only checks who is asking, not the fine's
+      // status.
+      allow delete: if sameCollege(collegeId) && hasPerm('fines.manage');
+    }
+
+    // ---------------- office orders ----------------
+
+    match /colleges/{collegeId}/officeOrders/{orderId} {
+      allow read: if sameCollege(collegeId) && hasPerm('officeOrders.view');
+
+      // Published in your own name only — the issuer can't be spoofed.
+      //
+      // An order names one or more students: `studentUids` is a flat array of
+      // uids (it exists so "orders against this student" can be a query, since
+      // array-contains can't reach inside `students[].uid`). At least one is
+      // required — an order against nobody is a document nothing can ever find.
+      //
+      // Money is the thing that needs the higher authority. An order carrying
+      // `fineTotal` writes a fine per fined student in the same batch, so it
+      // needs fines.manage — which is what a Warden holds, and why imposing a
+      // fine keeps working exactly as before. An order fining nobody is a
+      // warning, suspension or notice of enquiry and writes no fines, so
+      // officeOrders.manage is enough for that on its own.
+      //
+      // Deliberately monotonic: fines.manage alone permits both, because
+      // someone trusted to levy money is obviously trusted to record a
+      // warning, and the starter Warden role has fines.manage *without*
+      // officeOrders.manage. The reverse does not hold — officeOrders.manage
+      // alone cannot attach an amount.
+      //
+      // `fineTotal` is the flat signal for "this order levies money". The
+      // per-student amounts live inside `students[]`, and rules cannot look
+      // inside an array — which is exactly why the total is denormalised onto
+      // the document. Tested via keys() rather than read directly: the app
+      // always writes the key (null for a warning), but a direct REST call
+      // could omit it, and reading an absent field aborts the whole rule.
+      //
+      // A caller could lie and claim a null total while naming fines. It buys
+      // them nothing: each fine is its own document and the fines rules demand
+      // fines.manage independently, so the lie produces an order referencing
+      // fines that were never allowed to exist.
+      //
+      // Shape checks only, not exists() checks: a batch write can't verify a
+      // sibling write still in the same batch, because rules evaluate against
+      // committed state. Same reasoning as the fine's officeOrderId.
+      allow create: if sameCollege(collegeId)
+                    && request.resource.data.postedByUid == request.auth.uid
+                    && request.resource.data.studentUids is list
+                    && request.resource.data.studentUids.size() > 0
+                    && (
+                         hasPerm('fines.manage')
+                         || (
+                              hasPerm('officeOrders.manage')
+                              && (
+                                   !request.resource.data.keys()
+                                     .hasAny(['fineTotal'])
+                                   || request.resource.data.fineTotal == null
+                                 )
+                            )
+                       );
+
+      // No updates: an office order printed wrong is deleted and re-published,
+      // same as a notice.
+      allow delete: if sameCollege(collegeId)
+                    && (
+                      isSuperAdmin()
+                      || (
+                        hasPerm('officeOrders.manage')
+                        && resource.data.postedByUid == request.auth.uid
+                      )
+                    );
+    }
+
+    // ---------------- enrollments ----------------
+    //
+    // One document per student per academic session, id `{uid}_{session}`.
+    // Year lives here, never on `users/{uid}` — see ARCHITECTURE.md. Backfill
+    // and promotion both write with `.set()` on that deterministic id, so a
+    // re-run after a crash overwrites rather than duplicates; the rule below
+    // allows create and update identically for exactly that reason; there is
+    // no meaningful distinction between "first write" and "re-run" here.
+
+    match /colleges/{collegeId}/enrollments/{enrollmentId} {
+      allow get: if sameCollege(collegeId) && (
+                   resource.data.uid == request.auth.uid
+                   || hasPerm('academic.view')
+                   || hasPerm('academic.manage')
+                 );
+
+      allow list: if sameCollege(collegeId) && (
+                    hasPerm('academic.view')
+                    || hasPerm('academic.manage')
+                    || resource.data.uid == request.auth.uid
+                  );
+
+      allow create: if sameCollege(collegeId)
+                    && hasPerm('academic.manage')
+                    && request.resource.data.collegeId == collegeId;
+
+      // academic.manage rewrites the whole record (backfill, promotion).
+      // allotment.manage may only touch the room fields — the same narrowing
+      // applied to users/{uid} above, for the same reason: a warden who can
+      // fill beds must not be able to edit which year a student is in.
+      allow update: if sameCollege(collegeId) && (
+                      (
+                        hasPerm('academic.manage')
+                        && request.resource.data.collegeId == collegeId
+                      )
+                      || (
+                        hasPerm('allotment.manage')
+                        && onlyAllotmentFields()
+                      )
+                    );
+
+      // Never from the client — a wrong-year record is fixed by re-running
+      // promotion/backfill (both idempotent), not by deleting history.
+      allow delete: if false;
+    }
+
+    // ---------------- future modules ----------------
+    // Every module you add lives under its college and gates on its own
+    // permission string. Follow the pattern above:
+    //
+    // match /colleges/{collegeId}/notices/{noticeId} {
+    //   allow read:  if sameCollege(collegeId) && hasPerm('notices.view');
+    //   allow write: if sameCollege(collegeId) && hasPerm('notices.manage');
+    // }
+
+    // Anything not matched above is denied.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
