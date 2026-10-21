@@ -1,21 +1,36 @@
 #!/usr/bin/env node
 /**
- * Removes imported students — Auth account AND Firestore profile — and frees
- * the rooms they held.
+ * Removes imported students completely — every trace, in both Firebase halves.
  *
  *   node delete-students.js --from-csv ../students.csv           # preview
  *   node delete-students.js --from-csv ../students.csv --commit  # do it
- *   node delete-students.js --all-students --commit              # everyone
+ *   node delete-students.js --all-students --i-mean-it --commit  # everyone
  *
- * This is the counterpart the app cannot provide: `deleteUserProfile` in the
- * Flutter app deletes the Firestore document only, leaving the Auth login
- * alive forever with nothing behind it. That orphan is why re-importing the
- * same registration number used to fail with "email already in use".
+ * What "completely" covers, in order:
+ *   1. room occupancy   — occupantUids entries and the hostel bed counters
+ *   2. mess fee records — colleges/{id}/feeRecords
+ *   3. fines            — colleges/{id}/fines
+ *   4. requests         — colleges/{id}/requests
+ *   5. ID photos        — colleges/{id}/photos
+ *   6. Firestore profiles
+ *   7. Firebase Auth sign-in accounts
+ *
+ * Steps 1-6 are also available in the app under Settings -> Danger zone ->
+ * "Delete ALL student data". Step 7 is the one that needs this script and can
+ * never be done from a browser: the client SDK only deletes the account it is
+ * currently signed in as. A profile deleted without its login leaves an orphan,
+ * which is why re-importing the same registration number fails with "email
+ * already in use".
+ *
+ * Deliberately NOT touched — these are the institution, not its intake:
+ * hostels, rooms, college settings, roles, notices, office orders, audit log.
  *
  * Guards, because this is the destructive one:
  *   - dry run unless --commit is passed
  *   - a Super Admin is never touched, under any flag
  *   - --all-students additionally requires --i-mean-it
+ *   - refuses to run at all if the service-account key belongs to a different
+ *     Firebase project than the app (see assertKeyMatchesApp in lib.js)
  */
 
 import { readFileSync, existsSync } from 'node:fs';
@@ -157,6 +172,54 @@ targets.forEach((u) => {
 });
 console.log(`\n${targets.length} account(s) would be deleted.`);
 
+// --- everything attached to them ------------------------------------------
+//
+// Mess fee records, fines and requests all point at a student by uid. Deleting
+// the profile without these leaves rows naming people who no longer exist —
+// and because the Mess Fees page counts residents from the roster and treats
+// "no record" as unpaid, a half-cleared database reports hundreds of unpaid
+// students against a roster of zero. Same class of bug as the room occupancy
+// below: invisible until someone asks why the numbers do not add up.
+//
+// With --all-students the whole collection goes, which is both faster and more
+// complete than matching uids — it also sweeps up rows orphaned by earlier
+// runs of this script, back when it did not do this at all. Otherwise only the
+// targeted students' rows go.
+
+const targetUids = new Set(targets.map((u) => u.uid));
+const collegeRef = db.collection('colleges').doc(college.id);
+
+const attached = [
+  ['mess fee record(s)', collegeRef.collection('feeRecords'), 'studentUid'],
+  ['fine(s)', collegeRef.collection('fines'), 'studentUid'],
+  ['request(s)', collegeRef.collection('requests'), 'raisedByUid'],
+  // Enrollments arrived after this script did, and were missed for a while.
+  // The app cannot clean them up itself even in principle: `firestore.rules`
+  // sets `allow delete: if false` on enrollments, so history is never
+  // deletable from a browser and the Admin SDK is the only way through.
+  //
+  // Left behind they are worse than untidy. Re-imported students get fresh
+  // uids, so the old `{uid}_{session}` documents become permanently
+  // unreachable, and Academic Records goes on counting them — a roster of
+  // thousands enrolled against a college with no students in it.
+  ['enrollment record(s)', collegeRef.collection('enrollments'), 'uid'],
+  // ~50 KB each of the Spark plan's 1 GiB, and unreachable once the profile
+  // is gone. The doc id is the uid too; the field exists for this match.
+  ['ID photo(s)', collegeRef.collection('photos'), 'uid'],
+];
+
+// Resolved before the commit check so a dry run reports the real numbers
+// rather than promising a cleanup it has not measured.
+const doomed = [];
+for (const [label, colRef, uidField] of attached) {
+  const snap = await colRef.get();
+  const docs = allStudents
+    ? snap.docs
+    : snap.docs.filter((d) => targetUids.has(d.data()[uidField]));
+  if (docs.length) doomed.push({ label, docs });
+}
+doomed.forEach(({ label, docs }) => console.log(`${docs.length} ${label} would go too.`));
+
 if (!commit) {
   console.log('\nDry run — nothing was deleted. Re-run with --commit to apply.\n');
   process.exit(0);
@@ -215,6 +278,17 @@ for (const group of chunk(roomWrites, 400)) {
   await batch.commit();
 }
 if (roomWrites.length) console.log(`Freed ${bedDelta.size ? [...bedDelta.values()].reduce((a, b) => a + b, 0) : 0} bed(s).`);
+
+// --- purge the attached records -------------------------------------------
+
+for (const { label, docs } of doomed) {
+  for (const group of chunk(docs, 400)) {
+    const batch = db.batch();
+    group.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+  }
+  console.log(`Deleted ${docs.length} ${label}.`);
+}
 
 // --- delete profiles then accounts ---------------------------------------
 

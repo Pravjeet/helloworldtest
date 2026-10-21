@@ -51,17 +51,35 @@ class _AllotRoomViewState extends State<AllotRoomView> {
   bool _busy = false;
   String? _error;
 
-  /// Whether the room list is narrowed to [_requiredCapacity]. Default on —
-  /// per the seating policy, a mismatched type should be the exception a
-  /// warden has to deliberately reach for, not the default view — but it's a
-  /// toggle, not a hard block: real hostels run out of the right type
-  /// sometimes, and staff need an escape hatch rather than a dead end.
-  bool _matchOnly = true;
+  /// "Bypass course room allotment rules" — Super Admin only, and only for
+  /// this one allotment. Everyone else gets exactly the room type the seating
+  /// policy entitles the student to, enforced by the service as well as by
+  /// the room list, so it is the same rule as Hostels & Rooms and auto-allot.
+  bool _bypass = false;
+
+  /// The room type this student must get, from the live policy — or null
+  /// when no rule covers them, or a Super Admin is bypassing it.
+  int? _required(Enrollment? enrollment) {
+    final session = Session.of(context);
+    if (_bypass && session.user.isSuperAdmin) return null;
+    return _entitled(enrollment);
+  }
+
+  /// What the policy says, ignoring any bypass — shown in the banner either
+  /// way, so a Super Admin can see what they are overriding.
+  int? _entitled(Enrollment? enrollment) => entitledRoomCapacity(
+    settings: Session.of(context).settings,
+    course: widget.student.course,
+    year: enrollment?.year ?? int.tryParse(widget.student.year?.trim() ?? ''),
+    singleRoomEligible: widget.student.singleRoomEligible,
+  );
 
   /// Fetched once — the current session's enrollment doesn't change while
   /// this screen is open, and a Future (not a Stream) keeps a slow read from
-  /// blocking the hostel picker above it from rendering.
-  late final Future<Enrollment?> _enrollmentFuture = _loadEnrollment();
+  /// blocking the hostel picker above it from rendering. Not final: a read
+  /// that failed is retried on confirm, rather than every press replaying the
+  /// same stored error until the screen is reopened.
+  late Future<Enrollment?> _enrollmentFuture = _loadEnrollment();
 
   Future<Enrollment?> _loadEnrollment() {
     final session = Session.of(context);
@@ -83,12 +101,35 @@ class _AllotRoomViewState extends State<AllotRoomView> {
 
     final messenger = ScaffoldMessenger.of(context);
     try {
+      Enrollment? enrollment;
+      try {
+        enrollment = await _enrollmentFuture;
+      } catch (_) {
+        final retry = _loadEnrollment();
+        if (mounted) setState(() => _enrollmentFuture = retry);
+        enrollment = await retry; // a second failure is shown below
+      }
+      if (!mounted) return;
+      final required = _required(enrollment);
+      // The room was picked from a list filtered by the same rule — but the
+      // policy is live, and a room picked a moment before the entitlement
+      // loaded must not slip through to a refusal from the service.
+      if (required != null && _room!.capacity != required) {
+        setState(() {
+          _room = null;
+          _error =
+              'Pick a ${roomTypeLabel(required)} room — the seating policy '
+              'entitles ${widget.student.name} to one this year.';
+        });
+        return;
+      }
       if (widget.isMove) {
         await AllotmentService.instance.move(
           collegeId: widget.student.collegeId,
           student: widget.student,
           toHostel: _hostel!,
           toRoom: _room!,
+          requiredCapacity: required,
         );
       } else {
         await AllotmentService.instance.allot(
@@ -96,6 +137,7 @@ class _AllotRoomViewState extends State<AllotRoomView> {
           student: widget.student,
           hostel: _hostel!,
           room: _room!,
+          requiredCapacity: required,
         );
       }
       messenger.showSnackBar(
@@ -123,6 +165,7 @@ class _AllotRoomViewState extends State<AllotRoomView> {
   @override
   Widget build(BuildContext context) {
     final collegeId = Session.of(context).user.collegeId;
+    final isSuperAdmin = Session.of(context).user.isSuperAdmin;
     final student = widget.student;
 
     return Column(
@@ -202,7 +245,10 @@ class _AllotRoomViewState extends State<AllotRoomView> {
               FutureBuilder<Enrollment?>(
                 future: _enrollmentFuture,
                 builder: (context, snap) {
-                  final capacity = snap.data?.requiredCapacity;
+                  if (snap.connectionState != ConnectionState.done) {
+                    return const SizedBox.shrink();
+                  }
+                  final capacity = _entitled(snap.data);
                   if (capacity == null) return const SizedBox.shrink();
                   return Padding(
                     padding: const EdgeInsets.only(top: 12),
@@ -223,26 +269,43 @@ class _AllotRoomViewState extends State<AllotRoomView> {
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              'Entitled to a ${roomTypeLabel(capacity)} room '
-                              'this year, per the seating policy.',
+                              _bypass
+                                  ? 'Entitled to a ${roomTypeLabel(capacity)} '
+                                        'room — bypassed, so any room type '
+                                        'can be chosen.'
+                                  : 'Entitled to a ${roomTypeLabel(capacity)} '
+                                        'room this year, per the seating '
+                                        'policy.',
                               style: TextStyle(
                                 fontSize: 12.5,
                                 fontWeight: FontWeight.w600,
-                                color: AppColors.primary,
+                                color: _bypass
+                                    ? AppColors.warning
+                                    : AppColors.primary,
                               ),
                             ),
                           ),
-                          Text(
-                            'Match only',
-                            style: TextStyle(
-                              fontSize: 11.5,
-                              color: AppColors.primary,
+                          // Super Admin only: the escape hatch for the one
+                          // student the policy gets wrong. Never in auto-allot.
+                          if (isSuperAdmin) ...[
+                            Text(
+                              'Bypass course room\nallotment rules',
+                              textAlign: TextAlign.right,
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: AppColors.primary,
+                              ),
                             ),
-                          ),
-                          Switch(
-                            value: _matchOnly,
-                            onChanged: (v) => setState(() => _matchOnly = v),
-                          ),
+                            Switch(
+                              value: _bypass,
+                              onChanged: _busy
+                                  ? null
+                                  : (v) => setState(() {
+                                      _bypass = v;
+                                      _room = null;
+                                    }),
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -286,7 +349,7 @@ class _AllotRoomViewState extends State<AllotRoomView> {
             final hostels = hostelSnap.data!;
             if (hostels.isEmpty) {
               return AppCard(
-                padding: const EdgeInsets.symmetric(vertical: 50),
+                padding: EdgeInsets.symmetric(vertical: 50),
                 child: Center(
                   child: Text(
                     'No hostels exist yet. Create one first.',
@@ -364,7 +427,7 @@ class _AllotRoomViewState extends State<AllotRoomView> {
                 const SizedBox(height: 18),
                 if (_hostel == null)
                   AppCard(
-                    padding: const EdgeInsets.symmetric(vertical: 50),
+                    padding: EdgeInsets.symmetric(vertical: 50),
                     child: Center(
                       child: Text(
                         'Pick a hostel to see its free rooms.',
@@ -375,18 +438,27 @@ class _AllotRoomViewState extends State<AllotRoomView> {
                 else
                   FutureBuilder<Enrollment?>(
                     future: _enrollmentFuture,
-                    builder: (context, snap) => _RoomPicker(
-                      collegeId: collegeId,
-                      hostel: _hostel!,
-                      selected: _room,
-                      onlyEmpty: _onlyEmpty,
-                      onToggleOnlyEmpty: (v) =>
-                          setState(() => _onlyEmpty = v),
-                      onPick: (r) => setState(() => _room = r),
-                      requiredCapacity: _matchOnly
-                          ? snap.data?.requiredCapacity
-                          : null,
-                    ),
+                    builder: (context, snap) {
+                      // No rooms until the entitlement is known — listing
+                      // every type meanwhile offered rooms the policy then
+                      // refused.
+                      if (snap.connectionState != ConnectionState.done) {
+                        return const Padding(
+                          padding: EdgeInsets.all(60),
+                          child: Center(child: CircularProgressIndicator()),
+                        );
+                      }
+                      return _RoomPicker(
+                        collegeId: collegeId,
+                        hostel: _hostel!,
+                        selected: _room,
+                        onlyEmpty: _onlyEmpty,
+                        onToggleOnlyEmpty: (v) =>
+                            setState(() => _onlyEmpty = v),
+                        onPick: (r) => setState(() => _room = r),
+                        requiredCapacity: _required(snap.data),
+                      );
+                    },
                   ),
               ],
             );
@@ -513,14 +585,14 @@ class _RoomPicker extends StatelessWidget {
               const SizedBox(height: 6),
               if (rooms.isEmpty)
                 Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 40),
+                  padding: EdgeInsets.symmetric(vertical: 40),
                   child: Center(
                     child: Text(
                       requiredCapacity != null
                           ? 'No free ${roomTypeLabel(requiredCapacity!)} '
-                                'rooms here. Try another hostel, turn off '
-                                '"Match only" above, or turn off "empty '
-                                'rooms only".'
+                                'rooms here — the type the seating policy '
+                                'entitles this student to. Try another '
+                                'hostel, or turn off "empty rooms only".'
                           : 'No free rooms match. Try another hostel, or '
                                 'turn off "empty rooms only".',
                       textAlign: TextAlign.center,
@@ -558,9 +630,7 @@ class _RoomPicker extends StatelessWidget {
                                 horizontal: 8,
                               ),
                               decoration: BoxDecoration(
-                                color: isSel
-                                    ? AppColors.primary
-                                    : Colors.white,
+                                color: isSel ? AppColors.primary : Colors.white,
                                 borderRadius: BorderRadius.circular(10),
                                 border: Border.all(
                                   color: isSel

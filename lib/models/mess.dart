@@ -14,10 +14,12 @@ extension MealX on Meal {
 
   /// Default serving window, shown until an admin overrides it in the config.
   String get defaultTiming => switch (this) {
-    Meal.breakfast => '6:45 AM – 8:15 AM (weekdays) · 8:00 AM – 9:15 AM (Sat, '
-        'Sun & holidays)',
-    Meal.lunch => '12:30 PM – 2:30 PM (weekdays) · 1:00 PM – 2:30 PM (Sat, '
-        'Sun & holidays)',
+    Meal.breakfast =>
+      '6:45 AM – 8:15 AM (weekdays) · 8:00 AM – 9:15 AM (Sat, '
+          'Sun & holidays)',
+    Meal.lunch =>
+      '12:30 PM – 2:30 PM (weekdays) · 1:00 PM – 2:30 PM (Sat, '
+          'Sun & holidays)',
     Meal.eveningTea => '5:00 PM – 6:00 PM (all days)',
     Meal.dinner => '7:15 PM – 9:00 PM (all days)',
   };
@@ -97,9 +99,8 @@ class MessMenu {
     return (text == null || text.isEmpty) ? null : text;
   }
 
-  bool get isEmpty => days.values.every(
-    (meals) => meals.values.every((v) => v.trim().isEmpty),
-  );
+  bool get isEmpty =>
+      days.values.every((meals) => meals.values.every((v) => v.trim().isEmpty));
 
   MessMenu withItem(int weekday, Meal meal, String value) {
     final next = {
@@ -242,62 +243,61 @@ final MessMenu kDefaultMessMenu = MessMenu(
     1: {
       Meal.breakfast.name:
           'Stuffed parantha with 100 g curd / 17 g butter / 20 g jam / '
-              'boiled egg (1)\nOR 4 bread slices with butter or jam or egg\n'
-              'With 200 ml boiled milk or tea, and sprouts (black chana + '
-              'sabut moong, 100 g)',
+          'boiled egg (1)\nOR 4 bread slices with butter or jam or egg\n'
+          'With 200 ml boiled milk or tea, and sprouts (black chana + '
+          'sabut moong, 100 g)',
       Meal.lunch.name:
           'Chapati, seasonal green vegetable, rice\nDaal: Rajma\n'
-              'Curd 100 g with chaat masala',
+          'Curd 100 g with chaat masala',
       Meal.eveningTea.name: 'Tea',
       Meal.dinner.name:
           'Chapati, rice, fried daal (moong sabut / moong dhuli), '
-              'seasonal green vegetable',
+          'seasonal green vegetable',
     },
     2: {
       Meal.breakfast.name:
           'Plain parathas with aloo sabzi\nOR 4 bread slices with 17 g butter '
-              'or 20 g jam or boiled egg (1)\nWith 200 ml boiled milk or tea, '
-              'and sprouts (100 g)',
+          'or 20 g jam or boiled egg (1)\nWith 200 ml boiled milk or tea, '
+          'and sprouts (100 g)',
       Meal.lunch.name:
           'Chapati, seasonal green vegetable, rice\nSoy nuggets / vegetable '
-              'kofta\nOnion-tomato raita (100 g curd) + papad',
+          'kofta\nOnion-tomato raita (100 g curd) + papad',
       Meal.eveningTea.name: 'Samosa and tea',
       Meal.dinner.name:
           'Chapati, rice, fried daal (urad sabut), seasonal green vegetable\n'
-              'Sweet dish: Halwa',
+          'Sweet dish: Halwa',
     },
     3: {
       Meal.breakfast.name:
           'Puri with aloo sabzi, 100 g curd, pickle / chutney\n'
-              'With 200 ml boiled milk or tea, and sprouts (100 g)',
+          'With 200 ml boiled milk or tea, and sprouts (100 g)',
       Meal.lunch.name:
           'Chapati, seasonal green vegetable, rice\nDaal: Lobia / Raungi\n'
-              'Boondi raita (100 g curd)',
+          'Boondi raita (100 g curd)',
       Meal.eveningTea.name: 'Tea',
       Meal.dinner.name:
           'SPECIAL DINNER — Puri, white chana, shahi paneer (50 g) / chilli '
-              'paneer on alternate weeks, fried rice',
+          'paneer on alternate weeks, fried rice',
     },
     4: {
       Meal.breakfast.name:
           'Dalia and poha\nOR 4 bread slices with 17 g butter or 20 g jam or '
-              'boiled egg (1)\nWith 200 ml boiled milk or tea, and sprouts '
-              '(100 g)',
-      Meal.lunch.name:
-          'Chapati, seasonal mixed vegetable, rice\nKarhi pakora',
+          'boiled egg (1)\nWith 200 ml boiled milk or tea, and sprouts '
+          '(100 g)',
+      Meal.lunch.name: 'Chapati, seasonal mixed vegetable, rice\nKarhi pakora',
       Meal.eveningTea.name: 'Bread pakoda and tea',
       Meal.dinner.name:
           'Chapati, rice, fried daal (masur dhuli / masur sabut), seasonal '
-              'green vegetable\nSweet: Gulab jamun / rasgulla',
+          'green vegetable\nSweet: Gulab jamun / rasgulla',
     },
     5: {
       Meal.breakfast.name:
           'Stuffed parantha with 100 g curd / 17 g butter / 20 g jam / '
-              'boiled egg (1)\nOR 4 bread slices with butter or jam or egg\n'
-              'With 200 ml boiled milk or tea, and sprouts (100 g)',
+          'boiled egg (1)\nOR 4 bread slices with butter or jam or egg\n'
+          'With 200 ml boiled milk or tea, and sprouts (100 g)',
       Meal.lunch.name:
           'Chapati, seasonal green vegetable, fried rice\nDaal: Black chana\n'
-              'Onion-tomato raita (100 g curd) + papad',
+          'Onion-tomato raita (100 g curd) + papad',
       Meal.eveningTea.name: 'Tea',
       Meal.dinner.name:
           'Chapati, rice, fried daal (arhar), seasonal green vegetable',
@@ -305,29 +305,29 @@ final MessMenu kDefaultMessMenu = MessMenu(
     6: {
       Meal.breakfast.name:
           'Plain paratha with aloo sabzi\nOR 4 bread slices with 17 g butter '
-              'or 20 g jam or boiled egg (1)\nWith 200 ml boiled milk or tea, '
-              'and sprouts (100 g)',
+          'or 20 g jam or boiled egg (1)\nWith 200 ml boiled milk or tea, '
+          'and sprouts (100 g)',
       Meal.lunch.name:
           'Chapati, seasonal green vegetable, rice\nMoong sabut\n'
-              'Curd 100 g with chaat masala',
+          'Curd 100 g with chaat masala',
       Meal.eveningTea.name: 'Vegetable cutlets and tea',
       Meal.dinner.name:
           'Chapati, rice, rajma, seasonal green vegetable\n'
-              'Sweet dish: Fruit custard / kheer',
+          'Sweet dish: Fruit custard / kheer',
     },
     7: {
       Meal.breakfast.name:
           'Poha with tomato chutney / idli sambhar / vada sambhar / dalia / '
-              'sprouts\nOR 4 bread slices with 17 g butter or 20 g jam or '
-              'boiled egg (1)\nWith 200 ml boiled milk or tea, and sprouts '
-              '(100 g)',
+          'sprouts\nOR 4 bread slices with 17 g butter or 20 g jam or '
+          'boiled egg (1)\nWith 200 ml boiled milk or tea, and sprouts '
+          '(100 g)',
       Meal.lunch.name:
           'SPECIAL LUNCH — Puri / bhature, rice pulao, white chana, boondi '
-              'raita / dry masala aloo',
+          'raita / dry masala aloo',
       Meal.eveningTea.name: 'Tea',
       Meal.dinner.name:
           'Chapati, rice, fried daal (moong chhilke wali), seasonal green '
-              'vegetable',
+          'vegetable',
     },
   },
   notes: const [

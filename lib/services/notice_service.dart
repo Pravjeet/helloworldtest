@@ -29,9 +29,7 @@ class NoticeService {
     () => _col(collegeId)
         .orderBy('createdAt', descending: true)
         .snapshots()
-        .map(
-          (s) => s.docs.map((d) => Notice.fromMap(d.id, d.data())).toList(),
-        ),
+        .map((s) => s.docs.map((d) => Notice.fromMap(d.id, d.data())).toList()),
   );
 
   // ------------------------------ writes -----------------------------

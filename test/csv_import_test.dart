@@ -134,4 +134,48 @@ void main() {
       expect(table.headers, ['course', 'year', 'trade', 'sem']);
     });
   });
+
+  group('the downloadable template', () {
+    // The example row is built positionally, so adding or removing a column
+    // in one list and not the other silently shifts every value after it
+    // under the wrong header. That has happened once already — the template
+    // itself then teaches people the wrong shape, and the import "succeeds"
+    // with every field one column out.
+    test('the example row has exactly one value per column', () {
+      final lines = templateWithExample().split('\n');
+      final header = parseDelimited(templateWithExample()).headers;
+      final example = parseDelimited(templateWithExample()).rows.single;
+
+      expect(lines, hasLength(2));
+      expect(header, hasLength(kImportColumns.length));
+      expect(
+        example,
+        hasLength(kImportColumns.length),
+        reason: 'example row and kImportColumns have drifted apart',
+      );
+    });
+
+    test('the example lands each value under the right header', () {
+      final table = parseDelimited(templateWithExample());
+      final row = <String, String>{
+        for (var i = 0; i < table.headers.length; i++)
+          table.headers[i]: table.rows.single[i],
+      };
+
+      // Spot-check either side of where columns have been added and removed.
+      expect(row['name'], 'Aarav Sharma');
+      expect(row['registrationNo'], '2040353');
+      expect(row['room'], '101');
+      expect(row['dateOfBirth'], '14/03/2004');
+      expect(row['address'], 'Ludhiana, Punjab');
+      expect(row['pinCode'], '141001');
+    });
+
+    test('office room is gone — it was never a student field', () {
+      expect(kImportColumns, isNot(contains('officeRoom')));
+      // And the header aliases must not quietly resurrect it.
+      final table = parseDelimited('name,Office Room\nAarav,Admin Block 12');
+      expect(table.headers, isNot(contains('officeRoom')));
+    });
+  });
 }

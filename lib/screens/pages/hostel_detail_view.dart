@@ -5,12 +5,16 @@ import '../../core/session.dart';
 import '../../core/theme.dart';
 import '../../models/hostel.dart';
 import '../../services/auth_service.dart';
+import '../../services/data_service.dart';
+import '../../services/enrollment_service.dart';
 import '../../services/hostel_service.dart';
 import '../../widgets/selectable_chips.dart';
+import '../dashboard_shell.dart' show HistoryBanner;
 import 'hostel_editor_dialog.dart';
+import 'room_detail_dialog.dart';
 
 /// Rooms inside one hostel, grouped by floor.
-class HostelDetailView extends StatelessWidget {
+class HostelDetailView extends StatefulWidget {
   final String collegeId;
   final String hostelId;
   final VoidCallback onBack;
@@ -23,8 +27,75 @@ class HostelDetailView extends StatelessWidget {
   });
 
   @override
+  State<HostelDetailView> createState() => _HostelDetailViewState();
+}
+
+class _HostelDetailViewState extends State<HostelDetailView> {
+  // Named so the rest of the class reads exactly as it did before the split
+  // into StatefulWidget, rather than sprinkling `widget.` through methods
+  // that have nothing to do with this change.
+  String get collegeId => widget.collegeId;
+  String get hostelId => widget.hostelId;
+  VoidCallback get onBack => widget.onBack;
+
+  /// Memoised: an aggregation always goes to the server, so building it in
+  /// `build()` would re-count on every rebuild — and this page rebuilds
+  /// whenever the room stream ticks.
+  Future<int>? _students;
+  String? _studentsKey;
+
+  Future<int> _studentsIn(String collegeId, String hostelId) {
+    final key = '$collegeId/$hostelId';
+    if (_studentsKey != key || _students == null) {
+      _studentsKey = key;
+      _students = DataService.instance
+          .countStudentsByHostel(collegeId, [hostelId])
+          .then((m) => m[hostelId] ?? 0);
+    }
+    return _students!;
+  }
+
+  /// The past-session equivalent of [_studentsIn]: this hostel's headcount,
+  /// and who occupied each room, both read off one session's enrollment
+  /// records in the single query that fetches them.
+  ///
+  /// Deliberately one future rather than two — both numbers come from the
+  /// same roster, so fetching it once and deriving both is free the second
+  /// time and cannot let the headcount and the room grid disagree about
+  /// which session they describe.
+  Future<({int students, Map<String, int> byRoom})>? _historical;
+  String? _historicalKey;
+
+  Future<({int students, Map<String, int> byRoom})> _historicalFor(
+    String collegeId,
+    String hostelId,
+    String session,
+  ) {
+    final key = '$collegeId/$hostelId/$session';
+    if (_historicalKey != key || _historical == null) {
+      _historicalKey = key;
+      _historical = EnrollmentService.instance
+          .rosterOnce(collegeId, session)
+          .then((roster) {
+            final here = roster.where((e) => e.hostelId == hostelId);
+            final byRoom = <String, int>{};
+            for (final e in here) {
+              final r = e.roomId;
+              if (r != null) byRoom[r] = (byRoom[r] ?? 0) + 1;
+            }
+            return (students: here.length, byRoom: byRoom);
+          });
+    }
+    return _historical!;
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final canManage = Session.of(context).can(Perm.hostelsManage);
+    final session = Session.of(context);
+    final canManage = session.can(Perm.hostelsManage);
+    // Listing users needs `users.view`; without it the roster query would be
+    // rejected, so the headcount is omitted rather than shown as a stuck dash.
+    final canCount = session.can(Perm.usersView);
 
     return StreamBuilder<Hostel?>(
       stream: HostelService.instance.watchHostel(collegeId, hostelId),
@@ -51,66 +122,126 @@ class HostelDetailView extends StatelessWidget {
           );
         }
 
-        return StreamBuilder<List<Room>>(
-          stream: HostelService.instance.watchRooms(collegeId, hostelId),
-          builder: (context, roomSnap) {
-            if (roomSnap.hasError) {
-              return AppCard(
-                child: Text(AuthService.describeError(roomSnap.error!)),
-              );
-            }
-            final rooms = roomSnap.data ?? const <Room>[];
+        // One aggregation instead of the whole roster. The old version
+        // streamed 2,649 user documents and filtered them in Dart to produce
+        // a single integer, on the strength of a comment claiming the
+        // dashboard had already paid for that query — which stopped being
+        // true when the dashboard moved to counts.
+        //
+        // While viewing history there is no live count to ask for — the
+        // question is "who was here in 2025-26", which only that session's
+        // enrollment records can answer — so the historical future replaces
+        // the live one entirely rather than running alongside it.
+        return FutureBuilder<({int students, Map<String, int> byRoom})?>(
+          future: session.isViewingHistory
+              ? _historicalFor(collegeId, hostelId, session.viewingSession!)
+              : Future.value(null),
+          builder: (context, histSnap) {
+            final isHistory = session.isViewingHistory;
 
-            // Group by floor, preserving the service's floor→number ordering.
-            final byFloor = <int, List<Room>>{};
-            for (final r in rooms) {
-              byFloor.putIfAbsent(r.floor, () => []).add(r);
-            }
-            final floors = byFloor.keys.toList()..sort();
+            return FutureBuilder<int>(
+              future: isHistory || !canCount
+                  ? Future.value(0)
+                  : _studentsIn(collegeId, hostelId),
+              builder: (context, userSnap) {
+                final students = isHistory
+                    ? (histSnap.data?.students ?? 0)
+                    : (userSnap.data ?? 0);
+                final byRoom = histSnap.data?.byRoom;
+                final countsReady = isHistory
+                    ? histSnap.hasData
+                    : (canCount && userSnap.hasData);
 
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _Header(
-                  hostel: hostel,
-                  canManage: canManage,
-                  onBack: onBack,
-                  onAddRoom: () => _addRoom(context, hostel),
-                  onAddFloor: () => _addFloor(context, hostel, floors),
-                  onEditDetails: () => _editHostel(context, hostel),
-                  onRecalculate: () => _recalculate(context),
-                ),
-                const SizedBox(height: 18),
-                if (!roomSnap.hasData)
-                  const Padding(
-                    padding: EdgeInsets.all(60),
-                    child: Center(child: CircularProgressIndicator()),
-                  )
-                else if (rooms.isEmpty)
-                  AppCard(
-                    padding: const EdgeInsets.symmetric(vertical: 50),
-                    child: Center(
-                      child: Text(
-                        'This hostel has no rooms yet.',
-                        style: TextStyle(color: AppColors.textMuted),
-                      ),
-                    ),
-                  )
-                else
-                  ...floors.map(
-                    (floor) => Padding(
-                      padding: const EdgeInsets.only(bottom: 18),
-                      child: _FloorSection(
-                        floor: floor,
-                        rooms: byFloor[floor]!,
-                        canManage: canManage,
-                        onTapRoom: (room) => _editRoom(context, hostel, room),
-                      ),
-                    ),
+                final canMutate = canManage && !isHistory;
+
+                return StreamBuilder<List<Room>>(
+                  stream: HostelService.instance.watchRooms(
+                    collegeId,
+                    hostelId,
                   ),
-                const SizedBox(height: 8),
-                const _Legend(),
-              ],
+                  builder: (context, roomSnap) {
+                    if (roomSnap.hasError) {
+                      return AppCard(
+                        child: Text(AuthService.describeError(roomSnap.error!)),
+                      );
+                    }
+                    final rooms = roomSnap.data ?? const <Room>[];
+
+                    // Group by floor, preserving the service's floor→number
+                    // ordering.
+                    final byFloor = <int, List<Room>>{};
+                    for (final r in rooms) {
+                      byFloor.putIfAbsent(r.floor, () => []).add(r);
+                    }
+                    final floors = byFloor.keys.toList()..sort();
+
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const HistoryBanner(),
+                        _Header(
+                          hostel: hostel,
+                          students: students,
+                          countsReady: countsReady,
+                          // Editing/adding rooms and floors are institution
+                          // edits, same reasoning as the hostels grid: a room
+                          // added while looking at 2025-26 would still be
+                          // added to the live building, not to history.
+                          canManage: canMutate,
+                          onBack: onBack,
+                          onAddRoom: () => _addRoom(context, hostel),
+                          onAddFloor: () => _addFloor(context, hostel, floors),
+                          onEditDetails: () => _editHostel(context, hostel),
+                          onRecalculate: () => _recalculate(context),
+                        ),
+                        const SizedBox(height: 18),
+                        if (!roomSnap.hasData)
+                          const Padding(
+                            padding: EdgeInsets.all(60),
+                            child: Center(child: CircularProgressIndicator()),
+                          )
+                        else if (rooms.isEmpty)
+                          AppCard(
+                            padding: EdgeInsets.symmetric(vertical: 50),
+                            child: Center(
+                              child: Text(
+                                'This hostel has no rooms yet.',
+                                style: TextStyle(color: AppColors.textMuted),
+                              ),
+                            ),
+                          )
+                        else
+                          ...floors.map(
+                            (floor) => Padding(
+                              padding: const EdgeInsets.only(bottom: 18),
+                              child: _FloorSection(
+                                floor: floor,
+                                rooms: byFloor[floor]!,
+                                // Null in the live case, so every tile falls
+                                // back to `room.occupied` exactly as before —
+                                // this only replaces the source of truth
+                                // while a past session is on screen.
+                                historicalOccupiedByRoom: byRoom,
+                                onTapRoom: (room) =>
+                                    _openRoom(context, hostel, room),
+                                onRetype: canMutate
+                                    ? () => _retypeFloor(
+                                        context,
+                                        hostel,
+                                        floor,
+                                        byFloor[floor]!,
+                                      )
+                                    : null,
+                              ),
+                            ),
+                          ),
+                        const SizedBox(height: 8),
+                        const _Legend(),
+                      ],
+                    );
+                  },
+                );
+              },
             );
           },
         );
@@ -118,29 +249,101 @@ class HostelDetailView extends StatelessWidget {
     );
   }
 
-  Future<void> _editRoom(
-    BuildContext context,
-    Hostel hostel,
-    Room room,
-  ) async {
+  /// Tapping a room opens who lives in it, not the editor.
+  ///
+  /// Occupancy is what a warden actually wants from a room tile; editing
+  /// capacity or features is rarer and now sits behind a button inside. The
+  /// editor is still reachable, and only for those who can manage hostels.
+  Future<void> _openRoom(BuildContext context, Hostel hostel, Room room) async {
+    // Read here, in the page, where SessionScope is above us. The dialog is a
+    // separate route and cannot reach it.
+    final session = Session.of(context);
+    final isHistory = session.isViewingHistory;
+    final canManage = session.can(Perm.hostelsManage) && !isHistory;
+    final canAllot = session.can(Perm.allotmentManage) && !isHistory;
+    final canSeeRoster = session.can(Perm.usersView);
+
     await showDialog(
       context: context,
-      builder: (_) => _RoomEditorDialog(
+      builder: (_) => RoomDetailDialog(
         collegeId: collegeId,
         hostel: hostel,
         room: room,
+        canAllot: canAllot,
+        canSeeRoster: canSeeRoster,
+        // Null in the live case — the dialog then behaves exactly as it
+        // always has, reading `watchRoomOccupants` live.
+        viewingSession: isHistory ? session.viewingSession : null,
+        onEditRoom: canManage ? () => _editRoom(context, hostel, room) : null,
+        // The seating policy, same as Room Allotment — read here because the
+        // dialog can't reach SessionScope.
+        settings: session.settings,
+        liveSession: session.settings.session.current,
+        isSuperAdmin: session.user.isSuperAdmin,
       ),
+    );
+  }
+
+  /// Bulk-changes the seater type of a floor's rooms.
+  ///
+  /// Offered per floor rather than per hostel because that is the unit a
+  /// warden thinks in — "the second floor is being converted to singles" — and
+  /// because a building rarely changes all at once.
+  Future<void> _retypeFloor(
+    BuildContext context,
+    Hostel hostel,
+    int floor,
+    List<Room> rooms,
+  ) async {
+    final sizes = rooms.map((r) => r.capacity).toSet().toList()..sort();
+    final messenger = ScaffoldMessenger.of(context);
+
+    final choice = await showDialog<({int? from, int to})>(
+      context: context,
+      builder: (_) =>
+          _RetypeFloorDialog(floor: floor, rooms: rooms, existingSizes: sizes),
+    );
+    if (choice == null) return;
+
+    try {
+      final result = await HostelService.instance.retypeFloor(
+        collegeId: collegeId,
+        hostelId: hostel.id,
+        floor: floor,
+        fromCapacity: choice.from,
+        toCapacity: choice.to,
+      );
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            result.roomsChanged == 0
+                ? 'Nothing to change on floor $floor'
+                : 'Changed ${result.roomsChanged} room(s) on floor $floor '
+                      '(${result.bedsDelta >= 0 ? '+' : ''}'
+                      '${result.bedsDelta} beds)',
+          ),
+        ),
+      );
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text(AuthService.describeError(e))),
+      );
+    }
+  }
+
+  Future<void> _editRoom(BuildContext context, Hostel hostel, Room room) async {
+    await showDialog(
+      context: context,
+      builder: (_) =>
+          RoomEditorDialog(collegeId: collegeId, hostel: hostel, room: room),
     );
   }
 
   Future<void> _addRoom(BuildContext context, Hostel hostel) async {
     await showDialog(
       context: context,
-      builder: (_) => _RoomEditorDialog(
-        collegeId: collegeId,
-        hostel: hostel,
-        room: null,
-      ),
+      builder: (_) =>
+          RoomEditorDialog(collegeId: collegeId, hostel: hostel, room: null),
     );
   }
 
@@ -185,6 +388,8 @@ class HostelDetailView extends StatelessWidget {
 
 class _Header extends StatelessWidget {
   final Hostel hostel;
+  final int students;
+  final bool countsReady;
   final bool canManage;
   final VoidCallback onBack;
   final VoidCallback onAddRoom;
@@ -194,6 +399,8 @@ class _Header extends StatelessWidget {
 
   const _Header({
     required this.hostel,
+    required this.students,
+    required this.countsReady,
     required this.canManage,
     required this.onBack,
     required this.onAddRoom,
@@ -221,7 +428,7 @@ class _Header extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      hostel.name,
+                      hostel.label,
                       style: const TextStyle(
                         fontSize: 19,
                         fontWeight: FontWeight.w800,
@@ -229,6 +436,7 @@ class _Header extends StatelessWidget {
                     ),
                     const SizedBox(height: 3),
                     Text(
+                      '${hostel.label == hostel.name ? '' : '${hostel.name} · '}'
                       '${hostel.gender.label} · ${hostel.floors} floors · '
                       '${hostel.roomCount} rooms · ${hostel.bedCount} beds '
                       '(${hostel.freeBeds} free)',
@@ -237,6 +445,30 @@ class _Header extends StatelessWidget {
                         fontSize: 13,
                       ),
                     ),
+                    // Counted from the roster, not from the bed counters, so
+                    // the two can be compared rather than one echoing the other.
+                    if (countsReady) ...[
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.people_outline_rounded,
+                            size: 15,
+                            color: AppColors.primary,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            '$students student${students == 1 ? '' : 's'} '
+                            'in this hostel',
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.primary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -302,10 +534,7 @@ class _Header extends StatelessWidget {
                 Expanded(
                   child: Text(
                     hostel.address!,
-                    style: TextStyle(
-                      color: AppColors.textMuted,
-                      fontSize: 13,
-                    ),
+                    style: TextStyle(color: AppColors.textMuted, fontSize: 13),
                   ),
                 ),
               ],
@@ -333,20 +562,30 @@ class _Header extends StatelessWidget {
 class _FloorSection extends StatelessWidget {
   final int floor;
   final List<Room> rooms;
-  final bool canManage;
+
+  /// Every room is tappable regardless of permission — the dialog it opens is
+  /// read-only unless the viewer can allot or manage hostels, and it says so.
   final ValueChanged<Room> onTapRoom;
+
+  /// Null when the viewer can't manage hostels.
+  final VoidCallback? onRetype;
+
+  /// Set only while viewing history — see [_RoomTile.historicalOccupied].
+  final Map<String, int>? historicalOccupiedByRoom;
 
   const _FloorSection({
     required this.floor,
     required this.rooms,
-    required this.canManage,
     required this.onTapRoom,
+    this.onRetype,
+    this.historicalOccupiedByRoom,
   });
 
   @override
   Widget build(BuildContext context) {
+    int occupiedOf(Room r) => historicalOccupiedByRoom?[r.id] ?? r.occupied;
     final beds = rooms.fold<int>(0, (s, r) => s + r.capacity);
-    final occupied = rooms.fold<int>(0, (s, r) => s + r.occupied);
+    final occupied = rooms.fold<int>(0, (s, r) => s + occupiedOf(r));
 
     return AppCard(
       child: Column(
@@ -364,11 +603,41 @@ class _FloorSection extends StatelessWidget {
               const SizedBox(width: 10),
               Text(
                 '${rooms.length} rooms · $occupied/$beds beds',
-                style: TextStyle(
-                  color: AppColors.textMuted,
-                  fontSize: 12.5,
-                ),
+                style: TextStyle(color: AppColors.textMuted, fontSize: 12.5),
               ),
+              const SizedBox(width: 10),
+              // The mix, when the floor is not all one size — which is the
+              // case the bulk change exists for.
+              Builder(
+                builder: (context) {
+                  final sizes = <int, int>{};
+                  for (final r in rooms) {
+                    sizes[r.capacity] = (sizes[r.capacity] ?? 0) + 1;
+                  }
+                  if (sizes.length <= 1) return const SizedBox.shrink();
+                  final parts = (sizes.keys.toList()..sort())
+                      .map((c) => '${sizes[c]}×${c == 1 ? 'single' : '${c}s'}')
+                      .join(', ');
+                  return Text(
+                    parts,
+                    style: TextStyle(
+                      color: AppColors.warning,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  );
+                },
+              ),
+              const Spacer(),
+              if (onRetype != null)
+                TextButton.icon(
+                  onPressed: onRetype,
+                  icon: const Icon(Icons.swap_horiz_rounded, size: 16),
+                  label: const Text('Seater type'),
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
             ],
           ),
           const SizedBox(height: 14),
@@ -379,7 +648,14 @@ class _FloorSection extends StatelessWidget {
                 .map(
                   (r) => _RoomTile(
                     room: r,
-                    onTap: canManage ? () => onTapRoom(r) : null,
+                    // A room absent from the map genuinely had nobody in it
+                    // that session — this must stay a definite 0, not null,
+                    // or it would fall back to the room's *live* occupant
+                    // count and misreport an empty-that-year room as full.
+                    historicalOccupied: historicalOccupiedByRoom == null
+                        ? null
+                        : (historicalOccupiedByRoom![r.id] ?? 0),
+                    onTap: () => onTapRoom(r),
                   ),
                 )
                 .toList(),
@@ -392,12 +668,22 @@ class _FloorSection extends StatelessWidget {
 
 class _RoomTile extends StatelessWidget {
   final Room room;
+
+  /// Occupant count for whichever session is on screen. Null in the live
+  /// case — the tile then reads `room.occupied` exactly as it always has.
+  /// Status (maintenance/reserved) always stays live: it is an
+  /// administrative flag on the physical room, not a fact about a session.
+  final int? historicalOccupied;
+
   final VoidCallback? onTap;
 
-  const _RoomTile({required this.room, this.onTap});
+  const _RoomTile({required this.room, this.historicalOccupied, this.onTap});
 
   @override
   Widget build(BuildContext context) {
+    final occupied = historicalOccupied ?? room.occupied;
+    final isFull = occupied >= room.capacity;
+
     late final Color fg;
     late final Color bg;
 
@@ -407,10 +693,10 @@ class _RoomTile extends StatelessWidget {
     } else if (room.status == RoomStatus.reserved) {
       fg = AppColors.info;
       bg = AppColors.infoSoft;
-    } else if (room.isFull) {
+    } else if (isFull) {
       fg = AppColors.warning;
       bg = AppColors.warningSoft;
-    } else if (room.occupied > 0) {
+    } else if (occupied > 0) {
       fg = AppColors.primary;
       bg = AppColors.primarySoft;
     } else {
@@ -422,7 +708,8 @@ class _RoomTile extends StatelessWidget {
       message:
           '${room.capacityLabel}'
           '${room.features.isEmpty ? '' : ' · ${room.features.join(', ')}'}'
-          '\n${room.occupied}/${room.capacity} occupied · ${room.status.label}',
+          '\n$occupied/${room.capacity} occupied · ${room.status.label}'
+          '${room.status == RoomStatus.maintenance && (room.maintenanceNote ?? '').isNotEmpty ? ': ${room.maintenanceNote}' : ''}',
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(10),
@@ -446,7 +733,7 @@ class _RoomTile extends StatelessWidget {
               ),
               const SizedBox(height: 2),
               Text(
-                '${room.occupied}/${room.capacity}',
+                '$occupied/${room.capacity}',
                 style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
@@ -512,29 +799,34 @@ class _LegendDot extends StatelessWidget {
 // Room editor
 // =====================================================================
 
-class _RoomEditorDialog extends StatefulWidget {
+/// Public so the Under Maintenance page can open the exact same form on a
+/// room it picked from a different hostel's list, rather than duplicating
+/// the status/message fields in a second dialog.
+class RoomEditorDialog extends StatefulWidget {
   final String collegeId;
   final Hostel hostel;
 
   /// Null when adding a new room.
   final Room? room;
 
-  const _RoomEditorDialog({
+  const RoomEditorDialog({
+    super.key,
     required this.collegeId,
     required this.hostel,
     this.room,
   });
 
   @override
-  State<_RoomEditorDialog> createState() => _RoomEditorDialogState();
+  State<RoomEditorDialog> createState() => _RoomEditorDialogState();
 }
 
-class _RoomEditorDialogState extends State<_RoomEditorDialog> {
+class _RoomEditorDialogState extends State<RoomEditorDialog> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _number;
   late final TextEditingController _floor;
   late final TextEditingController _rent;
   late final TextEditingController _note;
+  late final TextEditingController _maintenanceNote;
 
   late int _capacity;
   late RoomStatus _status;
@@ -555,6 +847,7 @@ class _RoomEditorDialogState extends State<_RoomEditorDialog> {
       text: r?.rentPerBed == null ? '' : '${r!.rentPerBed}',
     );
     _note = TextEditingController(text: r?.note ?? '');
+    _maintenanceNote = TextEditingController(text: r?.maintenanceNote ?? '');
     _capacity = r?.capacity ?? 2;
     _status = r?.status ?? RoomStatus.active;
     _features = {...?r?.features};
@@ -562,7 +855,7 @@ class _RoomEditorDialogState extends State<_RoomEditorDialog> {
 
   @override
   void dispose() {
-    for (final c in [_number, _floor, _rent, _note]) {
+    for (final c in [_number, _floor, _rent, _note, _maintenanceNote]) {
       c.dispose();
     }
     super.dispose();
@@ -592,6 +885,14 @@ class _RoomEditorDialogState extends State<_RoomEditorDialog> {
     try {
       final rent = num.tryParse(_rent.text.trim());
       final note = _note.text.trim().isEmpty ? null : _note.text.trim();
+      // Forced to null the moment status isn't Maintenance, regardless of
+      // what's still typed in the field — leaving it behind status would
+      // read as a live issue on a room that's fine again.
+      final maintenanceNote = _status != RoomStatus.maintenance
+          ? null
+          : (_maintenanceNote.text.trim().isEmpty
+                ? null
+                : _maintenanceNote.text.trim());
 
       if (_isNew) {
         final number = _number.text.trim();
@@ -607,6 +908,7 @@ class _RoomEditorDialogState extends State<_RoomEditorDialog> {
             status: _status,
             rentPerBed: rent,
             note: note,
+            maintenanceNote: maintenanceNote,
           ),
         );
       } else {
@@ -627,6 +929,7 @@ class _RoomEditorDialogState extends State<_RoomEditorDialog> {
             occupantUids: widget.room!.occupantUids,
             rentPerBed: rent,
             note: note,
+            maintenanceNote: maintenanceNote,
           ),
         );
       }
@@ -636,9 +939,7 @@ class _RoomEditorDialogState extends State<_RoomEditorDialog> {
       );
     } catch (e) {
       if (mounted) {
-        setState(
-          () => _error = e.toString().replaceFirst('Exception: ', ''),
-        );
+        setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -677,9 +978,7 @@ class _RoomEditorDialogState extends State<_RoomEditorDialog> {
       messenger.showSnackBar(const SnackBar(content: Text('Room deleted')));
     } catch (e) {
       if (mounted) {
-        setState(
-          () => _error = e.toString().replaceFirst('Exception: ', ''),
-        );
+        setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
       }
     }
   }
@@ -707,10 +1006,7 @@ class _RoomEditorDialogState extends State<_RoomEditorDialog> {
                     ),
                     child: Text(
                       _error!,
-                      style: TextStyle(
-                        color: AppColors.danger,
-                        fontSize: 13,
-                      ),
+                      style: TextStyle(color: AppColors.danger, fontSize: 13),
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -738,9 +1034,7 @@ class _RoomEditorDialogState extends State<_RoomEditorDialog> {
                           controller: _floor,
                           enabled: !_busy,
                           keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
-                            labelText: 'Floor',
-                          ),
+                          decoration: const InputDecoration(labelText: 'Floor'),
                           validator: (v) {
                             final n = int.tryParse(v ?? '');
                             return (n == null || n < 1) ? 'Min 1' : null;
@@ -813,6 +1107,18 @@ class _RoomEditorDialogState extends State<_RoomEditorDialog> {
                     ),
                   ],
                 ),
+                if (_status == RoomStatus.maintenance) ...[
+                  const SizedBox(height: 14),
+                  TextFormField(
+                    controller: _maintenanceNote,
+                    enabled: !_busy,
+                    maxLines: 2,
+                    decoration: const InputDecoration(
+                      labelText: "What's wrong",
+                      hintText: 'e.g. AC not cooling, leaking tap',
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 14),
 
                 TextFormField(
@@ -856,10 +1162,7 @@ class _RoomEditorDialogState extends State<_RoomEditorDialog> {
         if (!_isNew)
           TextButton(
             onPressed: _busy ? null : _delete,
-            child: Text(
-              'Delete',
-              style: TextStyle(color: AppColors.danger),
-            ),
+            child: Text('Delete', style: TextStyle(color: AppColors.danger)),
           ),
         TextButton(
           onPressed: _busy ? null : () => Navigator.pop(context),
@@ -946,9 +1249,7 @@ class _AddFloorDialogState extends State<_AddFloorDialog> {
       messenger.showSnackBar(const SnackBar(content: Text('Floor added')));
     } catch (e) {
       if (mounted) {
-        setState(
-          () => _error = e.toString().replaceFirst('Exception: ', ''),
-        );
+        setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -981,10 +1282,7 @@ class _AddFloorDialogState extends State<_AddFloorDialog> {
                     ),
                     child: Text(
                       _error!,
-                      style: TextStyle(
-                        color: AppColors.danger,
-                        fontSize: 13,
-                      ),
+                      style: TextStyle(color: AppColors.danger, fontSize: 13),
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -1015,9 +1313,7 @@ class _AddFloorDialogState extends State<_AddFloorDialog> {
                         enabled: !_busy,
                         keyboardType: TextInputType.number,
                         onChanged: (_) => setState(() {}),
-                        decoration: const InputDecoration(
-                          labelText: 'Rooms',
-                        ),
+                        decoration: const InputDecoration(labelText: 'Rooms'),
                         validator: (v) {
                           final n = int.tryParse(v ?? '');
                           if (n == null || n < 1) return 'Min 1';
@@ -1103,6 +1399,144 @@ class _AddFloorDialogState extends State<_AddFloorDialog> {
                   ),
                 )
               : const Text('Add floor'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Asks what a floor's rooms should become.
+///
+/// Two modes because a floor is not always uniform: convert one size to
+/// another and leave the rest, or flatten the whole floor to one size.
+class _RetypeFloorDialog extends StatefulWidget {
+  final int floor;
+  final List<Room> rooms;
+  final List<int> existingSizes;
+
+  const _RetypeFloorDialog({
+    required this.floor,
+    required this.rooms,
+    required this.existingSizes,
+  });
+
+  @override
+  State<_RetypeFloorDialog> createState() => _RetypeFloorDialogState();
+}
+
+class _RetypeFloorDialogState extends State<_RetypeFloorDialog> {
+  /// Null means "every room on this floor".
+  int? _from;
+  int _to = 3;
+
+  @override
+  void initState() {
+    super.initState();
+    // Default to converting the most common size on the floor, which is
+    // usually what someone means.
+    if (widget.existingSizes.length > 1) _from = widget.existingSizes.first;
+    _to = widget.existingSizes.isEmpty ? 3 : widget.existingSizes.last;
+  }
+
+  String _label(int c) => c == 1 ? 'Single' : '$c Seater';
+
+  int get _affected => widget.rooms
+      .where((r) => _from == null || r.capacity == _from)
+      .where((r) => r.capacity != _to)
+      .length;
+
+  /// Rooms that already hold more students than the new size allows.
+  List<Room> get _blocked => widget.rooms
+      .where((r) => _from == null || r.capacity == _from)
+      .where((r) => r.occupied > _to)
+      .toList();
+
+  @override
+  Widget build(BuildContext context) {
+    final blocked = _blocked;
+
+    return AlertDialog(
+      title: Text('Seater type on floor ${widget.floor}'),
+      content: SizedBox(
+        width: 430,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            DropdownButtonFormField<int?>(
+              initialValue: _from,
+              decoration: const InputDecoration(labelText: 'Change'),
+              items: [
+                const DropdownMenuItem<int?>(
+                  value: null,
+                  child: Text('Every room on this floor'),
+                ),
+                ...widget.existingSizes.map(
+                  (c) => DropdownMenuItem<int?>(
+                    value: c,
+                    child: Text('Only the ${_label(c)} rooms'),
+                  ),
+                ),
+              ],
+              onChanged: (v) => setState(() => _from = v),
+            ),
+            const SizedBox(height: 14),
+            DropdownButtonFormField<int>(
+              initialValue: _to,
+              decoration: const InputDecoration(labelText: 'Into'),
+              items: const [1, 2, 3, 4, 5, 6]
+                  .map(
+                    (c) => DropdownMenuItem(
+                      value: c,
+                      child: Text(c == 1 ? 'Single' : '$c Seater'),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (v) => setState(() => _to = v ?? _to),
+            ),
+            const SizedBox(height: 16),
+            if (blocked.isNotEmpty)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppColors.dangerSoft,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Text(
+                  '${blocked.length} room(s) already hold more than $_to '
+                  'student(s) — ${blocked.take(4).map((r) => r.number).join(', ')}'
+                  '${blocked.length > 4 ? '…' : ''}. Move somebody out first, '
+                  'or pick a larger type.',
+                  style: TextStyle(
+                    color: AppColors.danger,
+                    fontSize: 12.5,
+                    height: 1.4,
+                  ),
+                ),
+              )
+            else
+              Text(
+                _affected == 0
+                    ? 'Nothing would change.'
+                    : '$_affected room(s) become ${_label(_to)}. '
+                          'Room numbers, features and current occupants are '
+                          'kept.',
+                style: TextStyle(fontSize: 12.5, color: AppColors.textMuted),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: (blocked.isNotEmpty || _affected == 0)
+              ? null
+              : () => Navigator.pop(context, (from: _from, to: _to)),
+          child: const Text('Change'),
         ),
       ],
     );

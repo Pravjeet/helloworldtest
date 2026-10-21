@@ -31,23 +31,13 @@ class HostelEditorDialogState extends State<HostelEditorDialog> {
   late final TextEditingController _code;
   late final TextEditingController _address;
 
-  final _floors = TextEditingController(text: '4');
-
-  /// True while every floor is built the same way — the usual case, and what
-  /// keeps a 10-floor hostel a two-field form. Turning it off seeds every
-  /// floor from the shared layout, so customising one floor never means
-  /// retyping the other nine.
-  bool _sameEveryFloor = true;
-
-  /// The layout applied to every floor while [_sameEveryFloor] is on.
-  final List<_GroupDraft> _sharedGroups = [
-    _GroupDraft(capacity: 2, rooms: '25'),
+  /// The building, floor by floor. Each floor holds one or more groups of
+  /// identical rooms, so "floor 1 has eight 3-seaters and four singles" is
+  /// expressible — which the old floors × rooms-per-floor × capacity form
+  /// could not say at all.
+  final List<_FloorDraft> _floorDrafts = [
+    _FloorDraft.uniform(rooms: 25, capacity: 2),
   ];
-
-  /// Per-floor layouts, index 0 == floor 1. Only read when [_sameEveryFloor]
-  /// is off, and kept the same length as the floor count by
-  /// [_syncFloorGroups].
-  final List<List<_GroupDraft>> _floorGroups = [];
 
   late HostelGender _gender;
   late Set<String> _amenities;
@@ -79,94 +69,58 @@ class HostelEditorDialogState extends State<HostelEditorDialog> {
 
   @override
   void dispose() {
-    for (final c in [_name, _code, _address, _floors]) {
+    for (final c in [_name, _code, _address]) {
       c.dispose();
     }
-    for (final g in _sharedGroups) {
-      g.dispose();
-    }
-    for (final floor in _floorGroups) {
-      for (final g in floor) {
-        g.dispose();
-      }
+    for (final f in _floorDrafts) {
+      f.dispose();
     }
     super.dispose();
   }
 
-  int get _floorCount => (int.tryParse(_floors.text) ?? 0).clamp(0, 20);
-
-  /// Grows or trims [_floorGroups] to match the floor count. New floors are
-  /// copied from the shared layout rather than starting empty — an added
-  /// floor is nearly always "another one like the others".
-  void _syncFloorGroups() {
-    final n = _floorCount;
-    while (_floorGroups.length < n) {
-      _floorGroups.add([for (final g in _sharedGroups) g.copy()]);
-    }
-    while (_floorGroups.length > n) {
-      for (final g in _floorGroups.removeLast()) {
-        g.dispose();
-      }
-    }
-  }
-
-  /// Adds a room type to [target], defaulting to a capacity not already used
-  /// there — a second row duplicating the first is never what's wanted.
-  void _addGroup(List<_GroupDraft> target) => setState(() {
-    final used = target.map((g) => g.capacity).toSet();
-    final next = [1, 2, 3, 4, 5, 6].firstWhere(
-      (c) => !used.contains(c),
-      orElse: () => 1,
-    );
-    target.add(_GroupDraft(capacity: next, rooms: '25'));
-  });
-
-  void _removeGroup(List<_GroupDraft> target, int index) => setState(() {
-    target.removeAt(index).dispose();
-  });
-
-  /// Pushes one floor's layout onto every other floor — for the building
-  /// where the ground floor is the odd one out and floors 2–10 all match it
-  /// after a tweak.
-  void _copyFloorToAll(int source) => setState(() {
-    final master = _floorGroups[source];
-    for (var i = 0; i < _floorGroups.length; i++) {
-      if (i == source) continue;
-      for (final g in _floorGroups[i]) {
-        g.dispose();
-      }
-      _floorGroups[i] = [for (final g in master) g.copy()];
-    }
-  });
-
-  List<RoomGroup> _toGroups(List<_GroupDraft> drafts, List<String> features) => [
-    for (final d in drafts)
-      RoomGroup(
-        capacity: d.capacity,
-        rooms: int.tryParse(d.rooms.text) ?? 0,
-        features: features,
-      ),
-  ];
-
   RoomPlan get _plan {
     final features = _roomFeatures.toList();
-    if (_sameEveryFloor) {
-      return RoomPlan.uniform(
-        floors: _floorCount,
-        groups: _toGroups(_sharedGroups, features),
-      );
-    }
     return RoomPlan(
       floorPlans: [
-        for (var i = 0; i < _floorCount; i++)
+        for (final f in _floorDrafts)
           FloorPlan(
-            groups: i < _floorGroups.length
-                ? _toGroups(_floorGroups[i], features)
-                : const [],
+            groups: [
+              for (final g in f.groups)
+                if (g.count > 0)
+                  RoomGroup(
+                    capacity: g.capacity,
+                    count: g.count,
+                    features: features,
+                  ),
+            ],
           ),
       ],
     );
   }
+
+  void _addFloor() => setState(() {
+    // A new floor copies the one below it: buildings repeat, and retyping the
+    // same eight-and-four mix per floor is the tedium this form exists to
+    // remove.
+    final last = _floorDrafts.isEmpty ? null : _floorDrafts.last;
+    _floorDrafts.add(
+      last == null
+          ? _FloorDraft.uniform(rooms: 25, capacity: 2)
+          : _FloorDraft.from(last),
+    );
+  });
+
+  void _removeFloor(int i) => setState(() => _floorDrafts.removeAt(i));
+
+  /// Applies floor 1's mix to every other floor, for the common building
+  /// where each storey is identical.
+  void _copyFirstFloorToAll() => setState(() {
+    if (_floorDrafts.isEmpty) return;
+    final first = _floorDrafts.first;
+    for (var i = 1; i < _floorDrafts.length; i++) {
+      _floorDrafts[i] = _FloorDraft.from(first);
+    }
+  });
 
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
@@ -177,21 +131,6 @@ class HostelEditorDialogState extends State<HostelEditorDialog> {
         () => _error =
             'That would create ${plan.totalRooms} rooms. Cap it at 2000 — '
             'split very large blocks into separate hostels instead.',
-      );
-      return;
-    }
-    if (_showRoomPlan && plan.exceedsFloorLimit) {
-      setState(
-        () => _error =
-            'A floor can hold at most $kMaxRoomsPerFloor rooms, because room '
-            'numbers are floor-prefixed — a 100th room on floor 3 would be '
-            'numbered 400 and collide with floor 4. Split that floor in two.',
-      );
-      return;
-    }
-    if (_showRoomPlan && plan.totalRooms == 0) {
-      setState(
-        () => _error = 'Add at least one room type with a room count above 0.',
       );
       return;
     }
@@ -315,10 +254,7 @@ class HostelEditorDialogState extends State<HostelEditorDialog> {
                     ),
                     child: Text(
                       _error!,
-                      style: TextStyle(
-                        color: AppColors.danger,
-                        fontSize: 13,
-                      ),
+                      style: TextStyle(color: AppColors.danger, fontSize: 13),
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -371,17 +307,12 @@ class HostelEditorDialogState extends State<HostelEditorDialog> {
                   decoration: const InputDecoration(labelText: 'Accommodates'),
                   items: HostelGender.values
                       .map(
-                        (g) => DropdownMenuItem(
-                          value: g,
-                          child: Text(g.label),
-                        ),
+                        (g) => DropdownMenuItem(value: g, child: Text(g.label)),
                       )
                       .toList(),
                   onChanged: _busy
                       ? null
-                      : (v) => setState(
-                          () => _gender = v ?? HostelGender.coed,
-                        ),
+                      : (v) => setState(() => _gender = v ?? HostelGender.coed),
                 ),
                 const SizedBox(height: 14),
 
@@ -498,87 +429,57 @@ class HostelEditorDialogState extends State<HostelEditorDialog> {
                       ),
                     ),
                   const SizedBox(height: 14),
-                  SizedBox(
-                    width: 160,
-                    child: TextFormField(
-                      controller: _floors,
-                      enabled: !_busy,
-                      keyboardType: TextInputType.number,
-                      onChanged: (_) => setState(_syncFloorGroups),
-                      decoration: const InputDecoration(labelText: 'Floors'),
-                      validator: (v) {
-                        final n = int.tryParse(v ?? '');
-                        if (n == null || n < 1) return 'Min 1';
-                        if (n > 20) return 'Max 20';
-                        return null;
-                      },
-                    ),
+                  Row(
+                    children: [
+                      Text(
+                        'Floors (${_floorDrafts.length})',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const Spacer(),
+                      if (_floorDrafts.length > 1)
+                        TextButton(
+                          onPressed: _busy ? null : _copyFirstFloorToAll,
+                          child: const Text('Make all floors like floor 1'),
+                        ),
+                      const SizedBox(width: 4),
+                      TextButton.icon(
+                        onPressed: (_busy || _floorDrafts.length >= 20)
+                            ? null
+                            : _addFloor,
+                        icon: const Icon(Icons.add_rounded, size: 17),
+                        label: const Text('Add floor'),
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 14),
-
-                  SwitchListTile(
-                    value: _sameEveryFloor,
-                    onChanged: _busy
-                        ? null
-                        : (v) => setState(() {
-                            _sameEveryFloor = v;
-                            if (!v) _syncFloorGroups();
-                          }),
-                    contentPadding: EdgeInsets.zero,
-                    dense: true,
-                    title: const Text(
-                      'Every floor is laid out the same',
-                      style: TextStyle(
-                        fontSize: 13.5,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    subtitle: Text(
-                      _sameEveryFloor
-                          ? 'Set the mix once and it applies to all '
-                                '$_floorCount floors.'
-                          : 'Each floor is set separately below. They all '
-                                'started from the shared layout.',
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        color: AppColors.textMuted,
-                      ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Each floor can mix seater types \u2014 eight 3-seaters and '
+                    'four singles on the same floor is fine.',
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      color: AppColors.textMuted,
                     ),
                   ),
                   const SizedBox(height: 10),
-
-                  if (_sameEveryFloor)
-                    _CompositionEditor(
-                      title: 'Rooms on each floor',
-                      groups: _sharedGroups,
+                  for (var i = 0; i < _floorDrafts.length; i++) ...[
+                    _FloorRow(
+                      floor: i + 1,
+                      draft: _floorDrafts[i],
                       enabled: !_busy,
+                      canRemove: _floorDrafts.length > 1,
                       onChanged: () => setState(() {}),
-                      onAdd: () => _addGroup(_sharedGroups),
-                      onRemove: (i) => _removeGroup(_sharedGroups, i),
-                    )
-                  else
-                    for (var f = 0; f < _floorGroups.length; f++) ...[
-                      if (f > 0) const SizedBox(height: 12),
-                      _CompositionEditor(
-                        title: 'Floor ${f + 1}',
-                        groups: _floorGroups[f],
-                        enabled: !_busy,
-                        onChanged: () => setState(() {}),
-                        onAdd: () => _addGroup(_floorGroups[f]),
-                        onRemove: (i) => _removeGroup(_floorGroups[f], i),
-                        onCopyToAll: _floorGroups.length > 1
-                            ? () => _copyFloorToAll(f)
-                            : null,
-                      ),
-                    ],
+                      onRemove: () => _removeFloor(i),
+                    ),
+                    const SizedBox(height: 10),
+                  ],
 
                   const SizedBox(height: 18),
                   const Text(
                     'Default room features',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                    ),
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
                   ),
                   const SizedBox(height: 8),
                   SelectableChips(
@@ -647,177 +548,187 @@ class HostelEditorDialogState extends State<HostelEditorDialog> {
   }
 }
 
-/// Editing state for one room type within a floor: how many rooms, and of
-/// what capacity.
+/// Editing state for one extra room type: how many rooms, and what capacity.
+/// Rooms per floor is shared with the main type above, so this row is just
+/// two fields.
+/// One floor being edited: a list of {count, capacity} rows.
+class _FloorDraft {
+  final List<_GroupDraft> groups;
+
+  _FloorDraft(this.groups);
+
+  factory _FloorDraft.uniform({required int rooms, required int capacity}) =>
+      _FloorDraft([_GroupDraft(rooms: rooms, capacity: capacity)]);
+
+  /// A copy, so editing the new floor never writes through to the one it was
+  /// modelled on.
+  factory _FloorDraft.from(_FloorDraft other) => _FloorDraft([
+    for (final g in other.groups)
+      _GroupDraft(rooms: g.count, capacity: g.capacity),
+  ]);
+
+  int get roomCount => groups.fold(0, (a, g) => a + g.count);
+  int get bedCount => groups.fold(0, (a, g) => a + g.count * g.capacity);
+
+  void dispose() {
+    for (final g in groups) {
+      g.dispose();
+    }
+  }
+}
+
 class _GroupDraft {
   final TextEditingController rooms;
   int capacity;
 
-  _GroupDraft({required String rooms, required this.capacity})
-    : rooms = TextEditingController(text: rooms);
+  _GroupDraft({required int rooms, required this.capacity})
+    : rooms = TextEditingController(text: '$rooms');
 
-  /// A detached duplicate — needed because each floor owns its own
-  /// controllers, so seeding a floor from another must not share them.
-  _GroupDraft copy() => _GroupDraft(rooms: rooms.text, capacity: capacity);
+  int get count => int.tryParse(rooms.text.trim()) ?? 0;
 
   void dispose() => rooms.dispose();
 }
 
-/// The room mix for one floor (or for every floor at once) — a list of
-/// "N rooms of capacity C" rows, with a live total underneath.
-class _CompositionEditor extends StatelessWidget {
-  final String title;
-  final List<_GroupDraft> groups;
+/// One floor's row in the editor: its seater groups, and what it adds up to.
+class _FloorRow extends StatelessWidget {
+  final int floor;
+  final _FloorDraft draft;
   final bool enabled;
+  final bool canRemove;
   final VoidCallback onChanged;
-  final VoidCallback onAdd;
-  final void Function(int index) onRemove;
+  final VoidCallback onRemove;
 
-  /// Shown only in per-floor mode, and only when there's more than one floor
-  /// to copy onto.
-  final VoidCallback? onCopyToAll;
-
-  const _CompositionEditor({
-    required this.title,
-    required this.groups,
+  const _FloorRow({
+    required this.floor,
+    required this.draft,
     required this.enabled,
+    required this.canRemove,
     required this.onChanged,
-    required this.onAdd,
     required this.onRemove,
-    this.onCopyToAll,
   });
-
-  int get _rooms => groups.fold(
-    0,
-    (acc, g) => acc + (int.tryParse(g.rooms.text) ?? 0),
-  );
-
-  int get _beds => groups.fold(
-    0,
-    (acc, g) => acc + (int.tryParse(g.rooms.text) ?? 0) * g.capacity,
-  );
 
   @override
   Widget build(BuildContext context) {
-    final over = _rooms > kMaxRoomsPerFloor;
-
     return Container(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+      padding: const EdgeInsets.fromLTRB(12, 10, 8, 12),
       decoration: BoxDecoration(
-        border: Border.all(color: over ? AppColors.danger : AppColors.border),
         borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Expanded(
-                child: Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
-                  ),
+              Text(
+                'Floor $floor',
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
                 ),
               ),
-              if (onCopyToAll != null)
-                TextButton.icon(
-                  onPressed: enabled ? onCopyToAll : null,
-                  icon: const Icon(Icons.copy_all_rounded, size: 15),
-                  label: const Text('Copy to all floors'),
-                  style: TextButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                    textStyle: const TextStyle(fontSize: 11.5),
-                  ),
-                ),
-            ],
-          ),
-          for (var i = 0; i < groups.length; i++)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Row(
-                children: [
-                  Expanded(
-                    flex: 2,
-                    child: TextFormField(
-                      controller: groups[i].rooms,
-                      enabled: enabled,
-                      keyboardType: TextInputType.number,
-                      onChanged: (_) => onChanged(),
-                      decoration: const InputDecoration(
-                        labelText: 'Rooms',
-                        isDense: true,
-                      ),
-                      validator: (v) {
-                        final n = int.tryParse(v ?? '');
-                        if (n == null || n < 0) return 'Min 0';
-                        if (n > kMaxRoomsPerFloor) return 'Max 99';
-                        return null;
-                      },
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    flex: 3,
-                    child: DropdownButtonFormField<int>(
-                      initialValue: groups[i].capacity,
-                      decoration: const InputDecoration(
-                        labelText: 'Type',
-                        isDense: true,
-                      ),
-                      items: const [1, 2, 3, 4, 5, 6]
-                          .map(
-                            (n) => DropdownMenuItem(
-                              value: n,
-                              child: Text(n == 1 ? 'Single' : '$n seater'),
-                            ),
-                          )
-                          .toList(),
-                      onChanged: enabled
-                          ? (v) {
-                              groups[i].capacity = v ?? groups[i].capacity;
-                              onChanged();
-                            }
-                          : null,
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: (enabled && groups.length > 1)
-                        ? () => onRemove(i)
-                        : null,
-                    icon: const Icon(Icons.close_rounded, size: 18),
-                    visualDensity: VisualDensity.compact,
-                    tooltip: 'Remove this room type',
-                  ),
-                ],
-              ),
-            ),
-          const SizedBox(height: 6),
-          Row(
-            children: [
-              TextButton.icon(
-                onPressed: (enabled && groups.length < 6) ? onAdd : null,
-                icon: const Icon(Icons.add_rounded, size: 16),
-                label: const Text('Add room type'),
-                style: TextButton.styleFrom(
-                  visualDensity: VisualDensity.compact,
-                  textStyle: const TextStyle(fontSize: 12),
-                ),
+              const SizedBox(width: 10),
+              Text(
+                '${draft.roomCount} rooms \u00b7 ${draft.bedCount} beds',
+                style: TextStyle(fontSize: 12, color: AppColors.textMuted),
               ),
               const Spacer(),
-              Text(
-                over
-                    ? '$_rooms rooms — over the $kMaxRoomsPerFloor limit'
-                    : '$_rooms rooms · $_beds beds',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: over ? AppColors.danger : AppColors.textMuted,
+              TextButton.icon(
+                onPressed: !enabled || draft.groups.length >= 5
+                    ? null
+                    : () {
+                        // Default the new group to a size not already on this
+                        // floor, so it is a genuine addition rather than a
+                        // duplicate row.
+                        final used = draft.groups
+                            .map((g) => g.capacity)
+                            .toSet();
+                        final next = [
+                          1,
+                          2,
+                          3,
+                          4,
+                          5,
+                          6,
+                        ].firstWhere((c) => !used.contains(c), orElse: () => 1);
+                        draft.groups.add(_GroupDraft(rooms: 0, capacity: next));
+                        onChanged();
+                      },
+                icon: const Icon(Icons.add_rounded, size: 15),
+                label: const Text('Seater type'),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
                 ),
+              ),
+              IconButton(
+                onPressed: !enabled || !canRemove ? null : onRemove,
+                icon: const Icon(Icons.delete_outline_rounded, size: 18),
+                tooltip: 'Remove floor $floor',
+                visualDensity: VisualDensity.compact,
               ),
             ],
           ),
+          for (var i = 0; i < draft.groups.length; i++) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                SizedBox(
+                  width: 110,
+                  child: TextFormField(
+                    controller: draft.groups[i].rooms,
+                    enabled: enabled,
+                    keyboardType: TextInputType.number,
+                    onChanged: (_) => onChanged(),
+                    decoration: const InputDecoration(
+                      labelText: 'Rooms',
+                      isDense: true,
+                    ),
+                    validator: (v) {
+                      final n = int.tryParse(v?.trim() ?? '');
+                      if (n == null || n < 0) return 'Number';
+                      if (n > 99) return 'Max 99';
+                      return null;
+                    },
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: DropdownButtonFormField<int>(
+                    initialValue: draft.groups[i].capacity,
+                    decoration: const InputDecoration(
+                      labelText: 'Seater type',
+                      isDense: true,
+                    ),
+                    items: const [1, 2, 3, 4, 5, 6]
+                        .map(
+                          (n) => DropdownMenuItem(
+                            value: n,
+                            child: Text(n == 1 ? 'Single' : '$n seater'),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: !enabled
+                        ? null
+                        : (v) {
+                            draft.groups[i].capacity = v ?? 2;
+                            onChanged();
+                          },
+                  ),
+                ),
+                IconButton(
+                  onPressed: !enabled || draft.groups.length <= 1
+                      ? null
+                      : () {
+                          draft.groups.removeAt(i).dispose();
+                          onChanged();
+                        },
+                  icon: const Icon(Icons.close_rounded, size: 17),
+                  tooltip: 'Remove this seater type',
+                  visualDensity: VisualDensity.compact,
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );

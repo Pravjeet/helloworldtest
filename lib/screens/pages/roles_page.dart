@@ -191,11 +191,7 @@ class _RoleCard extends StatelessWidget {
                 ),
               ),
               if (role.isSystem)
-                StatusPill(
-                  'SYSTEM',
-                  AppColors.textMuted,
-                  const Color(0xFFF1F5F9),
-                ),
+                StatusPill('SYSTEM', AppColors.textMuted, Color(0xFFF1F5F9)),
             ],
           ),
           const SizedBox(height: 6),
@@ -327,7 +323,9 @@ class _RoleEditorDialogState extends State<_RoleEditorDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text(widget.role == null ? 'New role' : 'Edit ${widget.role!.name}'),
+      title: Text(
+        widget.role == null ? 'New role' : 'Edit ${widget.role!.name}',
+      ),
       content: SizedBox(
         width: 560,
         height: 520,
@@ -346,10 +344,7 @@ class _RoleEditorDialogState extends State<_RoleEditorDialog> {
                   ),
                   child: Text(
                     _error!,
-                    style: TextStyle(
-                      color: AppColors.danger,
-                      fontSize: 13,
-                    ),
+                    style: TextStyle(color: AppColors.danger, fontSize: 13),
                   ),
                 ),
                 const SizedBox(height: 14),

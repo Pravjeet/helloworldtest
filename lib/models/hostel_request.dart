@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../core/hostel_codes.dart';
 
 /// A request raised by a resident: leave, a complaint, a room change, or
 /// something that fits none of those.
@@ -170,7 +171,7 @@ class HostelRequest {
   /// "Block A · Room 101", or null when the person has no room.
   String? get whereFrom => (hostelName == null || roomNumber == null)
       ? null
-      : '$hostelName · Room $roomNumber';
+      : '${HostelCodes.of(hostelName)} · Room $roomNumber';
 
   /// Inclusive day count for a leave request.
   int? get leaveDays => (fromDate == null || toDate == null)

@@ -60,20 +60,32 @@ service cloud.firestore {
         .hasOnly(['name', 'phone', 'gender', 'email', 'updatedAt']);
     }
 
-    // The only user/enrollment fields an allotment write may touch. Someone
-    // holding allotment.manage can put a student in a room, but cannot
-    // rename them, change their role, or reactivate a disabled account —
-    // and, on an enrollment, cannot touch the year or anything else
-    // backfill/promotion own.
+    // The only user fields an allotment write may touch. Someone holding
+    // allotment.manage can put a student in a room, but cannot rename them,
+    // change their role, or reactivate a disabled account.
     //
-    // 'roomCapacity' only ever appears on an enrollment (see
-    // AllotmentService.allot/vacate) — it's harmless to allow on a users/{uid}
-    // write too, since nothing ever writes it there, and one shared list is
-    // what keeps the two allotment paths from silently drifting apart.
+    // 'singleRoomEligible' is the merit flag for a UG single room. Marking it
+    // is an allotment decision (it only decides which room type a student may
+    // be given), so it rides on the same permission as filling the bed.
     function onlyAllotmentFields() {
       return request.resource.data.diff(resource.data).affectedKeys()
         .hasOnly(['hostelId', 'hostelName', 'roomId', 'roomNumber',
-                  'roomCapacity', 'allottedAt', 'updatedAt']);
+                  'roomCapacity', 'allottedAt', 'updatedAt',
+                  'singleRoomEligible']);
+    }
+
+    // 'roomCapacity' only ever appears on an enrollment document, never on
+    // users/{uid} — it's harmless to allow here since nothing writes it on a
+    // user, and one shared list is what keeps the two allotment paths (user
+    // profile, enrollment) from silently drifting apart as fields are added.
+
+    // The only user field annual promotion may touch when a student
+    // graduates. Deliberately not folded into onlyAllotmentFields — academic
+    // records staff can mark someone graduated, but that is not the same
+    // authority as filling their bed, and the reverse should not hold either.
+    function onlyGraduationFields() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasOnly(['status', 'updatedAt']);
     }
 
     // ---------------- colleges ----------------
@@ -181,12 +193,70 @@ service cloud.firestore {
                         resource.data.collegeId == myCollege() &&
                         onlyAllotmentFields()
                       )
+                      ||
+                      // Promotion marking a student graduated. Narrower than
+                      // users.edit for the same reason as the allotment
+                      // branch above — a role that can run promotion is not
+                      // thereby trusted to rename or re-role anyone either.
+                      (
+                        hasPerm('academic.manage') &&
+                        resource.data.collegeId == myCollege() &&
+                        onlyGraduationFields()
+                      )
                     );
 
       allow delete: if hasPerm('users.delete')
                     && resource.data.collegeId == myCollege()
                     && resource.data.get('isSuperAdmin', false) == false
                     && request.auth.uid != userId;
+    }
+
+    // ---------------- ID photos ----------------
+    //
+    // One document per person, id = their uid. Kept off users/{uid} because
+    // every roster read would otherwise carry every photo.
+    //
+    // The whole point is catching impersonation, so who may SET a photo is the
+    // tight part: users.edit, never your own, never a Super Admin, and only for
+    // someone who is actually in your college. A student choosing their own
+    // ID photo would defeat it.
+
+    function photoTargetInCollege(collegeId, uid) {
+      let target = get(/databases/$(database)/documents/users/$(uid)).data;
+      return target.collegeId == collegeId
+          && target.get('isSuperAdmin', false) == false;
+    }
+
+    match /colleges/{collegeId}/photos/{uid} {
+      // Your own, or anyone's if you are one of the people who has to check
+      // faces: the user directory, the fines register, office orders.
+      allow get: if sameCollege(collegeId) && (
+                   request.auth.uid == uid
+                   || hasPerm('users.view')
+                   || hasPerm('fines.viewAll')
+                   || hasPerm('officeOrders.view')
+                 );
+
+      // Always fetched one at a time by uid. A list would pull every photo in
+      // the college — tens of megabytes — so nothing is allowed to ask.
+      allow list: if false;
+
+      // ~90 KB JPEG -> ~120K base64 characters; the cap keeps a document from
+      // being stuffed toward Firestore's 1 MB limit.
+      allow create, update: if sameCollege(collegeId)
+                            && hasPerm('users.edit')
+                            && request.auth.uid != uid
+                            && photoTargetInCollege(collegeId, uid)
+                            && request.resource.data.uid == uid
+                            && request.resource.data.bytes is string
+                            && request.resource.data.bytes.size() <= 150000
+                            && request.resource.data.updatedByUid
+                               == request.auth.uid;
+
+      // users.delete too, so deleting a person can take their photo with them.
+      allow delete: if sameCollege(collegeId) && (
+                      hasPerm('users.edit') || hasPerm('users.delete')
+                    );
     }
 
     // ---------------- hostels & rooms ----------------
@@ -466,7 +536,8 @@ service cloud.firestore {
       // `fineTotal` writes a fine per fined student in the same batch, so it
       // needs fines.manage — which is what a Warden holds, and why imposing a
       // fine keeps working exactly as before. An order fining nobody is a
-      // warning, suspension or notice of enquiry and writes no fines, so
+      // warning,
+      // suspension or notice of enquiry and writes no fines, so
       // officeOrders.manage is enough for that on its own.
       //
       // Deliberately monotonic: fines.manage alone permits both, because
@@ -494,6 +565,14 @@ service cloud.firestore {
                     && request.resource.data.postedByUid == request.auth.uid
                     && request.resource.data.studentUids is list
                     && request.resource.data.studentUids.size() > 0
+                    // The scan is shrunk to 70 KB in the app; 70 KB of JPEG
+                    // is ~95.6K base64 characters. Checked via keys() for the
+                    // same reason as fineTotal below.
+                    && (
+                         !request.resource.data.keys().hasAny(['imageBase64'])
+                         || request.resource.data.imageBase64 == null
+                         || request.resource.data.imageBase64.size() <= 96000
+                       )
                     && (
                          hasPerm('fines.manage')
                          || (
@@ -521,22 +600,32 @@ service cloud.firestore {
     // ---------------- enrollments ----------------
     //
     // One document per student per academic session, id `{uid}_{session}`.
-    // Year lives here, never on `users/{uid}` — see ARCHITECTURE.md. Backfill
+    // Year lives here, never on `users/{uid}` — see DEVELOPMENT.md. Backfill
     // and promotion both write with `.set()` on that deterministic id, so a
     // re-run after a crash overwrites rather than duplicates; the rule below
-    // allows create and update identically for exactly that reason; there is
-    // no meaningful distinction between "first write" and "re-run" here.
+    // allows create and update identically for exactly that reason — there
+    // is no meaningful distinction between "first write" and "re-run" here.
 
     match /colleges/{collegeId}/enrollments/{enrollmentId} {
+      // allotment.manage reads too: every allot/move/vacate transaction reads
+      // the student's enrollment to keep its room fields in step, and Room
+      // Allotment lists the session roster for years and the seating policy.
+      // Without it a stock Warden got permission-denied on every bed — only
+      // a Super Admin (who short-circuits hasPerm) could allot at all.
       allow get: if sameCollege(collegeId) && (
                    resource.data.uid == request.auth.uid
                    || hasPerm('academic.view')
                    || hasPerm('academic.manage')
+                   || hasPerm('allotment.manage')
                  );
 
+      // Listing the roster also needs users.view: a role kept out of the
+      // student directory (BHS has allotment.manage but not users.view)
+      // must not get it back by listing enrollments instead.
       allow list: if sameCollege(collegeId) && (
                     hasPerm('academic.view')
                     || hasPerm('academic.manage')
+                    || (hasPerm('allotment.manage') && hasPerm('users.view'))
                     || resource.data.uid == request.auth.uid
                   );
 
@@ -559,9 +648,12 @@ service cloud.firestore {
                       )
                     );
 
-      // Never from the client — a wrong-year record is fixed by re-running
-      // promotion/backfill (both idempotent), not by deleting history.
-      allow delete: if false;
+      // A wrong-year record is fixed by re-running promotion/backfill (both
+      // idempotent), not by deleting history — so only a Super Admin may
+      // delete, and the one caller is the master "delete all students" reset.
+      // Without this, the reset left every enrollment behind and Academic
+      // Records kept reporting students who no longer existed.
+      allow delete: if sameCollege(collegeId) && isSuperAdmin();
     }
 
     // ---------------- future modules ----------------

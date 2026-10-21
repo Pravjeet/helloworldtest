@@ -64,6 +64,7 @@ class _RequestsPageState extends State<RequestsPage> {
       );
     }
   }
+
   _Queue _queue = _Queue.open;
   String _query = '';
 
@@ -130,10 +131,7 @@ class _RequestsPageState extends State<RequestsPage> {
                 showsQueue
                     ? 'Leave, complaints and room changes raised by residents.'
                     : 'Ask for leave, report a problem, or request a move.',
-                style: TextStyle(
-                  fontSize: 13,
-                  color: AppColors.textMuted,
-                ),
+                style: TextStyle(fontSize: 13, color: AppColors.textMuted),
               ),
               if (bothTabs) ...[
                 const SizedBox(height: 16),
@@ -178,7 +176,7 @@ class _RequestsPageState extends State<RequestsPage> {
           )
         else
           AppCard(
-            padding: const EdgeInsets.symmetric(vertical: 54),
+            padding: EdgeInsets.symmetric(vertical: 54),
             child: Center(
               child: Text(
                 'You don\'t have access to requests.',
@@ -279,8 +277,11 @@ class _QueueSection extends StatelessWidget {
                         '${open.where((r) => r.type == RequestType.complaint).length}',
                         AppColors.danger,
                       ),
-                      _Metric('Handled', '${handled.length}',
-                          AppColors.textStrong),
+                      _Metric(
+                        'Handled',
+                        '${handled.length}',
+                        AppColors.textStrong,
+                      ),
                     ],
                   ),
                   const SizedBox(height: 18),
@@ -481,19 +482,10 @@ class _MineSection extends StatelessWidget {
 /// Colour for a status pill. Kept in one place so the queue, the student list
 /// and the detail screen can't disagree about what "approved" looks like.
 ({Color fg, Color bg}) statusColours(RequestStatus s) => switch (s) {
-  RequestStatus.pending => (
-    fg: AppColors.warning,
-    bg: AppColors.warningSoft,
-  ),
+  RequestStatus.pending => (fg: AppColors.warning, bg: AppColors.warningSoft),
   RequestStatus.inProgress => (fg: AppColors.info, bg: AppColors.infoSoft),
-  RequestStatus.approved => (
-    fg: AppColors.success,
-    bg: AppColors.successSoft,
-  ),
-  RequestStatus.resolved => (
-    fg: AppColors.success,
-    bg: AppColors.successSoft,
-  ),
+  RequestStatus.approved => (fg: AppColors.success, bg: AppColors.successSoft),
+  RequestStatus.resolved => (fg: AppColors.success, bg: AppColors.successSoft),
   RequestStatus.rejected => (fg: AppColors.danger, bg: AppColors.dangerSoft),
 };
 
@@ -507,8 +499,18 @@ IconData typeIcon(RequestType t) => switch (t) {
 String shortDate(DateTime? d) {
   if (d == null) return '';
   const months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
   ];
   return '${d.day} ${months[d.month - 1]}';
 }

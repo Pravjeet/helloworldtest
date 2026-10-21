@@ -42,6 +42,10 @@ class Perm {
   static const officeOrdersView = 'officeOrders.view';
   static const officeOrdersManage = 'officeOrders.manage';
 
+  // Academic records (enrollments, promotion)
+  static const academicView = 'academic.view';
+  static const academicManage = 'academic.manage';
+
   // Mess fees (status only — the app never takes money)
   static const feesViewOwn = 'fees.viewOwn';
   static const feesViewAll = 'fees.viewAll';
@@ -56,10 +60,6 @@ class Perm {
 
   // Settings
   static const settingsManage = 'settings.manage';
-
-  // Academic records (enrollments, promotion)
-  static const academicView = 'academic.view';
-  static const academicManage = 'academic.manage';
 
   /// Grouped for the permission-picker UI.
   static const Map<String, List<PermissionDef>> catalogue = {
@@ -90,16 +90,44 @@ class Perm {
     ],
     'Fines': [
       PermissionDef(finesViewOwn, 'View own fines', 'See fines raised on you'),
-      PermissionDef(finesViewAll, 'View all fines', 'Fines dashboard and roster'),
+      PermissionDef(
+        finesViewAll,
+        'View all fines',
+        'Fines dashboard and roster',
+      ),
       PermissionDef(finesManage, 'Manage fines', 'Impose, waive and mark paid'),
     ],
     'Office Orders': [
-      PermissionDef(officeOrdersView, 'View office orders', 'Read issued orders'),
-      PermissionDef(officeOrdersManage, 'Manage office orders', 'Publish orders'),
+      PermissionDef(
+        officeOrdersView,
+        'View office orders',
+        'Read issued orders',
+      ),
+      PermissionDef(
+        officeOrdersManage,
+        'Manage office orders',
+        'Publish orders',
+      ),
+    ],
+    'Academic Records': [
+      PermissionDef(
+        academicView,
+        'View enrollments',
+        'See session rosters and year-wise lists',
+      ),
+      PermissionDef(
+        academicManage,
+        'Manage academic records',
+        'Backfill and run annual promotion',
+      ),
     ],
     'Mess Fees': [
       PermissionDef(feesViewOwn, 'View own fee status', 'See if you have paid'),
-      PermissionDef(feesViewAll, 'View all fee status', 'Month-by-month roster'),
+      PermissionDef(
+        feesViewAll,
+        'View all fee status',
+        'Month-by-month roster',
+      ),
       PermissionDef(feesManage, 'Record fee status', 'Mark students paid'),
     ],
     'Notices': [
@@ -111,10 +139,6 @@ class Perm {
     ],
     'System': [
       PermissionDef(settingsManage, 'System settings', 'Institution settings'),
-    ],
-    'Academic Records': [
-      PermissionDef(academicView, 'View enrollments', 'See session rosters and year-wise lists'),
-      PermissionDef(academicManage, 'Manage academic records', 'Backfill and run annual promotion'),
     ],
   };
 
@@ -132,6 +156,31 @@ class Perm {
   /// managed" picker.
   static bool managesHostels(Set<String> perms) =>
       perms.contains(hostelsManage) || perms.contains(allotmentManage);
+
+  /// True for a role that lives in the hostel rather than runs it.
+  ///
+  /// Staff always hold at least one permission that reaches beyond themselves:
+  /// something that manages a module, reads everyone's records, or opens the
+  /// user directory. A resident holds only self-service permissions — their
+  /// own fines, their own requests, their own room.
+  ///
+  /// Tested this way round on purpose. Whitelisting "student permissions"
+  /// would misfile every new self-service permission added later as staff;
+  /// this errs the safe way instead, treating anything with reach as staff.
+  /// It is also why the check is not [managesHostels]: a Mess Manager or an
+  /// Accountant runs nothing hostel-shaped, but is emphatically not a student
+  /// and should not be asked for a guardian's phone number.
+  ///
+  /// Drives which form the user-creation dialog shows.
+  static bool isResident(Set<String> perms) => !perms.any(
+    (p) =>
+        p.endsWith('.manage') ||
+        p.endsWith('.viewAll') ||
+        p.endsWith('.create') && p != requestsCreate ||
+        p == usersView ||
+        p == usersEdit ||
+        p == hostelsView,
+  );
 }
 
 class PermissionDef {
@@ -159,12 +208,12 @@ const Map<String, List<String>> kRoleTemplates = {
     Perm.finesManage,
     Perm.officeOrdersView,
     Perm.officeOrdersManage,
+    Perm.academicView,
+    Perm.academicManage,
     Perm.feesViewAll,
     Perm.feesManage,
     Perm.noticesView,
     Perm.noticesManage,
-    Perm.academicView,
-    Perm.academicManage,
   ],
   'Warden': [
     Perm.usersView,

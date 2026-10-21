@@ -47,9 +47,7 @@ class SelectableChips extends StatelessWidget {
           ),
           backgroundColor: Colors.white,
           selectedColor: AppColors.primarySoft,
-          side: BorderSide(
-            color: isOn ? AppColors.primary : AppColors.border,
-          ),
+          side: BorderSide(color: isOn ? AppColors.primary : AppColors.border),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(20),
           ),

@@ -114,6 +114,12 @@ class CachedStream<T> extends Stream<T> {
         _trace = st;
         _hasLatest = false;
         if (!_out.isClosed) _out.addError(e, st);
+        // Firestore ends a listener after an error such as permission-denied.
+        // Dropping it means the next listen opens a fresh query — so a page
+        // reopened after a rules deploy recovers, instead of replaying the
+        // old error until sign-out.
+        _upstream?.cancel();
+        _upstream = null;
       },
     );
   }

@@ -31,9 +31,8 @@ class RequestService {
         .orderBy('createdAt', descending: true)
         .snapshots()
         .map(
-          (s) => s.docs
-              .map((d) => HostelRequest.fromMap(d.id, d.data()))
-              .toList(),
+          (s) =>
+              s.docs.map((d) => HostelRequest.fromMap(d.id, d.data())).toList(),
         ),
   );
 
@@ -42,19 +41,30 @@ class RequestService {
   /// Deliberately not ordered in the query: adding `orderBy` alongside the
   /// `where` needs a composite index, and sorting 20 documents client-side is
   /// free. Fewer things to configure in the console.
+  final CachedStreamPool<List<HostelRequest>> _minePool = CachedStreamPool();
+
+  /// Pooled per student, which also collapses a genuine duplicate: the student
+  /// dashboard watches this twice in one tree (a summary card and the recent
+  /// list), and before pooling those were two independent listeners over
+  /// identical data, both re-created on every rebuild.
   Stream<List<HostelRequest>> watchMine(String collegeId, String uid) =>
-      _col(collegeId).where('raisedByUid', isEqualTo: uid).snapshots().map((s) {
-        final list = s.docs
-            .map((d) => HostelRequest.fromMap(d.id, d.data()))
-            .toList();
-        list.sort((a, b) {
-          final at = a.createdAt, bt = b.createdAt;
-          if (at == null && bt == null) return 0;
-          if (at == null) return 1;
-          if (bt == null) return -1;
-          return bt.compareTo(at);
-        });
-        return list;
+      _minePool.stream('$collegeId/$uid', () {
+        return _col(collegeId)
+            .where('raisedByUid', isEqualTo: uid)
+            .snapshots()
+            .map((s) {
+              final list = s.docs
+                  .map((d) => HostelRequest.fromMap(d.id, d.data()))
+                  .toList();
+              list.sort((a, b) {
+                final at = a.createdAt, bt = b.createdAt;
+                if (at == null && bt == null) return 0;
+                if (at == null) return 1;
+                if (bt == null) return -1;
+                return bt.compareTo(at);
+              });
+              return list;
+            });
       });
 
   // ------------------------------ writes -----------------------------

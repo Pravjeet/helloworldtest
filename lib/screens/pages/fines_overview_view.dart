@@ -86,9 +86,16 @@ class _FinesOverviewViewState extends State<FinesOverviewView> {
       (_year == null || '${f.createdAt?.year}' == _year);
 
   bool get _anyFilter =>
-      _hostel != null || _batch != null || _sem != null || _trade != null ||
-      _state != null || _status != null || _regNo != null ||
-      _officeOrder != null || _room != null || _year != null;
+      _hostel != null ||
+      _batch != null ||
+      _sem != null ||
+      _trade != null ||
+      _state != null ||
+      _status != null ||
+      _regNo != null ||
+      _officeOrder != null ||
+      _room != null ||
+      _year != null;
 
   void _clearAll() => setState(() {
     _hostel = _batch = _sem = _trade = _state = null;
@@ -105,10 +112,11 @@ class _FinesOverviewViewState extends State<FinesOverviewView> {
           for (final h in hostels)
             if (h.code.trim().isNotEmpty) h.name: h.code,
         };
-        _allHostelLabels = hostels
-            .map((h) => h.code.trim().isNotEmpty ? h.code : h.name)
-            .toList()
-          ..sort();
+        _allHostelLabels =
+            hostels
+                .map((h) => h.code.trim().isNotEmpty ? h.code : h.name)
+                .toList()
+              ..sort();
         return _buildBody(context);
       },
     );
@@ -134,19 +142,18 @@ class _FinesOverviewViewState extends State<FinesOverviewView> {
         // Every hostel that exists, plus any hostel name a fine still points
         // at even if that hostel has since been deleted — a filter option
         // must never disappear out from under a fine that references it.
-        final hostelOptions =
-            ({..._allHostelLabels, ...all.valuesOf((f) => _hostelLabel(f.hostelName))}
-                .toList()
-              ..sort());
+        final hostelOptions = ({
+          ..._allHostelLabels,
+          ...all.valuesOf((f) => _hostelLabel(f.hostelName)),
+        }.toList()..sort());
 
         // Same reasoning for trades: every trade the college runs, plus any
         // still referenced by an existing fine even if it was since removed
         // from the list.
-        final tradeOptions =
-            ({
-              ...Session.of(context).settings.tradeCodes,
-              ...all.valuesOf((f) => f.trade),
-            }.toList()..sort());
+        final tradeOptions = ({
+          ...Session.of(context).settings.tradeCodes,
+          ...all.valuesOf((f) => f.trade),
+        }.toList()..sort());
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -270,7 +277,7 @@ class _Banner extends StatelessWidget {
         Expanded(
           child: Column(
             children: [
-              const Text(
+              Text(
                 'Hostel Fines Dashboard',
                 textAlign: TextAlign.center,
                 style: TextStyle(
@@ -279,7 +286,7 @@ class _Banner extends StatelessWidget {
                   height: 1.15,
                 ),
               ),
-              const SizedBox(height: 3),
+              SizedBox(height: 3),
               Text(
                 'Sant Longowal Institute of Engineering & Technology',
                 textAlign: TextAlign.center,
@@ -291,8 +298,8 @@ class _Banner extends StatelessWidget {
         if (anyFilter)
           TextButton.icon(
             onPressed: onClear,
-            icon: const Icon(Icons.filter_alt_off_rounded, size: 17),
-            label: const Text('Clear filters'),
+            icon: Icon(Icons.filter_alt_off_rounded, size: 17),
+            label: Text('Clear filters'),
           ),
       ],
     ),
@@ -312,28 +319,28 @@ class _Headline extends StatelessWidget {
   Widget build(BuildContext context) {
     final accent = accentOverride ?? AppColors.primary;
     return Container(
-    width: 168,
-    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 14),
-    decoration: BoxDecoration(
-      color: accent.withValues(alpha: 0.07),
-      borderRadius: BorderRadius.circular(12),
-      border: Border.all(color: accent.withValues(alpha: 0.22)),
-    ),
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        FittedBox(
-          child: Text(
-            value,
-            style: TextStyle(
-              fontSize: 34,
-              fontWeight: FontWeight.w800,
-              color: accent,
-              height: 1.05,
+      width: 168,
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 14),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: accent.withValues(alpha: 0.22)),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FittedBox(
+            child: Text(
+              value,
+              style: TextStyle(
+                fontSize: 34,
+                fontWeight: FontWeight.w800,
+                color: accent,
+                height: 1.05,
+              ),
             ),
           ),
-        ),
-        const SizedBox(height: 2),
+          const SizedBox(height: 2),
           Text(
             label,
             textAlign: TextAlign.center,
@@ -503,8 +510,10 @@ class _Charts extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bySem = summary.countBy((f) => f.sem?.toString(), unknownLabel: '—')
-      ..sort((a, b) => (int.tryParse(a.key) ?? 999)
-          .compareTo(int.tryParse(b.key) ?? 999));
+      ..sort(
+        (a, b) =>
+            (int.tryParse(a.key) ?? 999).compareTo(int.tryParse(b.key) ?? 999),
+      );
     final byBatch = summary.countBy((f) => f.batch, unknownLabel: '—')
       ..sort((a, b) => a.key.compareTo(b.key));
 
@@ -562,7 +571,11 @@ class _Charts extends StatelessWidget {
         _Panel(
           title: 'Sum of Amount of Fine by Trade',
           child: _HBars(
-            data: summary.sumBy((f) => f.trade, unknownLabel: 'None', limit: 12),
+            data: summary.sumBy(
+              (f) => f.trade,
+              unknownLabel: 'None',
+              limit: 12,
+            ),
             money: true,
             axisTitle: 'Trade',
             onTap: (v) => onFilter('trade', v),
@@ -680,9 +693,7 @@ class _VBars extends StatelessWidget {
                   tooltipPadding: EdgeInsets.zero,
                   tooltipMargin: 2,
                   getTooltipItem: (group, _, rod, _) => BarTooltipItem(
-                    money
-                        ? compactAmount(rod.toY)
-                        : rod.toY.toStringAsFixed(0),
+                    money ? compactAmount(rod.toY) : rod.toY.toStringAsFixed(0),
                     TextStyle(
                       color: AppColors.textStrong,
                       fontSize: 10.5,
@@ -903,7 +914,7 @@ class _HBars extends StatelessWidget {
                                   : 2,
                               decoration: BoxDecoration(
                                 color: AppColors.primary,
-                                borderRadius: const BorderRadius.horizontal(
+                                borderRadius: BorderRadius.horizontal(
                                   right: Radius.circular(3),
                                 ),
                               ),

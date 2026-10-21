@@ -1,3 +1,22 @@
 {
-    "java.configuration.updateBuildConfiguration": "interactive"
+  // This is a Flutter project. The only Java/Gradle here is the Android build
+  // wrapper, which `flutter build` drives itself — the VS Code Java extension
+  // never needs to import it.
+  //
+  // Leaving Gradle import on produces a red error on android/build.gradle.kts:
+  //
+  //   Could not create task ':gradle:test' ... Type T not present
+  //
+  // That ':gradle' is not a project of ours. settings.gradle.kts pulls in
+  // Flutter's own plugin with includeBuild(".../flutter_tools/gradle"), and
+  // Gradle names an included build after its folder — which is literally
+  // called "gradle". So the extension walks into the Flutter SDK's own source,
+  // tries to enumerate its internal unit-test task, and its bundled Tooling
+  // API fails to reflect a generic type there. Nothing to do with this
+  // codebase, and the build itself is healthy (Gradle 8.12 on JDK 17).
+  "java.import.gradle.enabled": false,
+
+  // Don't offer to "update the build configuration" for a project the Java
+  // extension is no longer importing.
+  "java.configuration.updateBuildConfiguration": "disabled"
 }

@@ -24,6 +24,61 @@ class _AuditPageState extends State<AuditPage> {
   String _query = '';
   String? _module;
   bool _onlyUndoable = false;
+  bool _clearing = false;
+
+  Future<void> _clearLog(String collegeId, int shownCount) async {
+    // [shownCount] reflects the stream's display limit, not the true size of
+    // the collection — `clear()` deletes everything regardless. Never quote
+    // it as an exact count, or a workspace with more history than the limit
+    // sees a number smaller than what actually gets deleted.
+    final countLabel = shownCount >= 200 ? '$shownCount+' : '$shownCount';
+    final messenger = ScaffoldMessenger.of(context);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Clear the activity log?'),
+        content: SizedBox(
+          width: 420,
+          child: Text(
+            'This permanently deletes all $countLabel entries. Nothing they '
+            'recorded is undone — this only removes the log itself, and it '
+            'cannot be undone.',
+            style: TextStyle(
+              fontSize: 13,
+              color: AppColors.textMuted,
+              height: 1.45,
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppColors.danger),
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('Delete all'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    setState(() => _clearing = true);
+    try {
+      final deleted = await AuditService.instance.clear(collegeId);
+      messenger.showSnackBar(
+        SnackBar(content: Text('Deleted $deleted log entries')),
+      );
+    } catch (err) {
+      messenger.showSnackBar(
+        SnackBar(content: Text(AuthService.describeError(err))),
+      );
+    } finally {
+      if (mounted) setState(() => _clearing = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -72,23 +127,63 @@ class _AuditPageState extends State<AuditPage> {
                 children: [
                   SectionHeader(
                     'Activity log',
-                    trailing: Text(
-                      '${all.where((e) => e.canUndo).length} undoable',
-                      style: TextStyle(
-                        fontSize: 12.5,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.textMuted,
-                      ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          '${all.where((e) => e.canUndo).length} undoable',
+                          style: TextStyle(
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.textMuted,
+                          ),
+                        ),
+                        if (all.isNotEmpty) ...[
+                          const SizedBox(width: 14),
+                          OutlinedButton.icon(
+                            onPressed: _clearing
+                                ? null
+                                : () => _clearLog(collegeId, all.length),
+                            icon: _clearing
+                                ? const SizedBox(
+                                    height: 13,
+                                    width: 13,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : Icon(
+                                    Icons.delete_sweep_rounded,
+                                    size: 15,
+                                    color: AppColors.danger,
+                                  ),
+                            label: Text(
+                              'Clear log',
+                              style: TextStyle(color: AppColors.danger),
+                            ),
+                            style: OutlinedButton.styleFrom(
+                              side: BorderSide(
+                                color: AppColors.danger.withValues(alpha: 0.4),
+                              ),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 10,
+                              ),
+                              textStyle: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     'Recent changes across the workspace. Anything still '
                     'within 24 hours can be undone.',
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: AppColors.textMuted,
-                    ),
+                    style: TextStyle(fontSize: 13, color: AppColors.textMuted),
                   ),
                   const SizedBox(height: 16),
                   Row(
@@ -266,8 +361,18 @@ class _Grouped extends StatelessWidget {
     if (diff == 0) return 'Today';
     if (diff == 1) return 'Yesterday';
     const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
     ];
     return '${t.day} ${months[t.month - 1]} ${t.year}';
   }
@@ -412,10 +517,7 @@ class _EntryRowState extends State<_EntryRow> {
                     if (e.undone && e.undoneByName != null)
                       'undone by ${e.undoneByName}',
                   ].join(' · '),
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    color: AppColors.textMuted,
-                  ),
+                  style: TextStyle(fontSize: 11.5, color: AppColors.textMuted),
                 ),
               ],
             ),

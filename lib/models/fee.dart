@@ -120,7 +120,8 @@ String feeDocId(String period, String studentUid) => '${period}_$studentUid';
 // =====================================================================
 
 /// `YYYY-MM` for a date.
-String periodOf(DateTime d) => '${d.year}-${d.month.toString().padLeft(2, '0')}';
+String periodOf(DateTime d) =>
+    '${d.year}-${d.month.toString().padLeft(2, '0')}';
 
 /// "August 2026" from `2026-08`. Returns the input unchanged if it isn't a
 /// period, so a malformed value shows itself rather than crashing a list.
@@ -150,14 +151,34 @@ List<String> recentPeriods(DateTime from, {int count = 12}) {
 }
 
 const _months = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December',
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
 ];
 
 String shortDay(DateTime d) {
   const short = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
   ];
   return '${d.day} ${short[d.month - 1]} ${d.year}';
 }
@@ -203,8 +224,9 @@ class FeeSummary {
 
   /// Uses each record's own amount, not [amountEach] — the rate may have
   /// changed since an old month was collected, and the record is the truth.
-  num get collected =>
-      standings.where((s) => s.isPaid).fold<num>(0, (a, s) => a + s.record!.amount);
+  num get collected => standings
+      .where((s) => s.isPaid)
+      .fold<num>(0, (a, s) => a + s.record!.amount);
 
   num get expected => amountEach * total;
   num get pending => (expected - collected).clamp(0, double.infinity);

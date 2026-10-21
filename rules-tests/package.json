@@ -1,0 +1,14 @@
+{
+  "name": "homihostel-rules-tests",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Automated assertions against firestore.rules, run against the local emulator — not the live project. See ../MANUAL_QA.md for the human-driven counterpart of this.",
+  "scripts": {
+    "test": "firebase emulators:exec --config ../firebase.json --project=homihostel-rules-test --only firestore \"mocha rules.test.js --timeout 20000\""
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^3.0.4",
+    "mocha": "^10.7.3"
+  }
+}

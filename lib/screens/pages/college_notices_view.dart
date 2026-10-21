@@ -67,8 +67,9 @@ class _CollegeNoticesViewState extends State<CollegeNoticesView> {
         }
 
         final all = snap.data ?? const <CollegeNotice>[];
-        final shown =
-            _studentsOnly ? all.where((n) => n.forStudents).toList() : all;
+        final shown = _studentsOnly
+            ? all.where((n) => n.forStudents).toList()
+            : all;
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -173,12 +174,23 @@ class _CollegeRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
     ];
     final d = notice.published;
-    final dateStr =
-        d == null ? '' : '${d.day} ${months[d.month - 1]} ${d.year}';
+    final dateStr = d == null
+        ? ''
+        : '${d.day} ${months[d.month - 1]} ${d.year}';
 
     return InkWell(
       onTap: onTap,

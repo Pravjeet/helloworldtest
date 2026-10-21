@@ -44,7 +44,7 @@ class _NoticesPageState extends State<NoticesPage> {
 
     if (!canView) {
       return AppCard(
-        padding: const EdgeInsets.symmetric(vertical: 54),
+        padding: EdgeInsets.symmetric(vertical: 54),
         child: Center(
           child: Text(
             'You don\'t have permission to view notices.',
@@ -82,10 +82,7 @@ class _NoticesPageState extends State<NoticesPage> {
                 _tab == 0
                     ? 'Announcements posted by hostel staff.'
                     : 'Notices published by the college on sliet.ac.in.',
-                style: TextStyle(
-                  fontSize: 13,
-                  color: AppColors.textMuted,
-                ),
+                style: TextStyle(fontSize: 13, color: AppColors.textMuted),
               ),
               const SizedBox(height: 16),
               Row(
@@ -113,8 +110,7 @@ class _NoticesPageState extends State<NoticesPage> {
                   ],
                   selected: {_filter},
                   showSelectedIcon: false,
-                  onSelectionChanged: (s) =>
-                      setState(() => _filter = s.first),
+                  onSelectionChanged: (s) => setState(() => _filter = s.first),
                 ),
               ],
             ],
@@ -124,110 +120,109 @@ class _NoticesPageState extends State<NoticesPage> {
         if (_tab == 1)
           const CollegeNoticesView()
         else
-        StreamBuilder<List<Notice>>(
-          stream: NoticeService.instance.watchAll(collegeId),
-          builder: (context, snap) {
-            if (snap.hasError) {
-              return AppCard(
-                child: Text(AuthService.describeError(snap.error!)),
-              );
-            }
-            if (!snap.hasData) {
-              return const Padding(
-                padding: EdgeInsets.all(60),
-                child: Center(child: CircularProgressIndicator()),
-              );
-            }
+          StreamBuilder<List<Notice>>(
+            stream: NoticeService.instance.watchAll(collegeId),
+            builder: (context, snap) {
+              if (snap.hasError) {
+                return AppCard(
+                  child: Text(AuthService.describeError(snap.error!)),
+                );
+              }
+              if (!snap.hasData) {
+                return const Padding(
+                  padding: EdgeInsets.all(60),
+                  child: Center(child: CircularProgressIndicator()),
+                );
+              }
 
-            final all = snap.data!;
-            final active = all.where((n) => !n.isExpired).toList();
-            final expired = all.where((n) => n.isExpired).toList();
+              final all = snap.data!;
+              final active = all.where((n) => !n.isExpired).toList();
+              final expired = all.where((n) => n.isExpired).toList();
 
-            final shown = switch (_filter) {
-              'active' => active,
-              'expired' => expired,
-              _ => all,
-            };
+              final shown = switch (_filter) {
+                'active' => active,
+                'expired' => expired,
+                _ => all,
+              };
 
-            if (shown.isEmpty) {
-              return AppCard(
-                padding: const EdgeInsets.symmetric(vertical: 54),
-                child: Center(
-                  child: Text(
-                    _filter == 'active'
-                        ? 'No active notices.'
-                        : _filter == 'expired'
-                        ? 'No expired notices.'
-                        : 'No notices yet.',
-                    style: TextStyle(color: AppColors.textMuted),
+              if (shown.isEmpty) {
+                return AppCard(
+                  padding: const EdgeInsets.symmetric(vertical: 54),
+                  child: Center(
+                    child: Text(
+                      _filter == 'active'
+                          ? 'No active notices.'
+                          : _filter == 'expired'
+                          ? 'No expired notices.'
+                          : 'No notices yet.',
+                      style: TextStyle(color: AppColors.textMuted),
+                    ),
                   ),
+                );
+              }
+
+              return AppCard(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Column(
+                  children: [
+                    for (var i = 0; i < shown.length; i++) ...[
+                      _NoticeRow(
+                        notice: shown[i],
+                        canDelete:
+                            canCreate ||
+                            shown[i].postedByUid == session.user.uid,
+                        onDelete: () async {
+                          final messenger = ScaffoldMessenger.of(context);
+                          final ok = await showDialog<bool>(
+                            context: context,
+                            builder: (c) => AlertDialog(
+                              title: const Text('Delete this notice?'),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(c, false),
+                                  child: const Text('Keep it'),
+                                ),
+                                FilledButton(
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: AppColors.danger,
+                                  ),
+                                  onPressed: () => Navigator.pop(c, true),
+                                  child: const Text('Delete'),
+                                ),
+                              ],
+                            ),
+                          );
+                          if (ok != true) return;
+                          try {
+                            await NoticeService.instance.delete(
+                              collegeId: collegeId,
+                              noticeId: shown[i].id,
+                            );
+                            messenger.showSnackBar(
+                              const SnackBar(content: Text('Notice deleted')),
+                            );
+                          } catch (e) {
+                            messenger.showSnackBar(
+                              SnackBar(
+                                content: Text(AuthService.describeError(e)),
+                              ),
+                            );
+                          }
+                        },
+                      ),
+                      if (i != shown.length - 1)
+                        Divider(
+                          height: 1,
+                          indent: 20,
+                          endIndent: 20,
+                          color: AppColors.border,
+                        ),
+                    ],
+                  ],
                 ),
               );
-            }
-
-            return AppCard(
-              padding: const EdgeInsets.symmetric(vertical: 6),
-              child: Column(
-                children: [
-                  for (var i = 0; i < shown.length; i++) ...[
-                    _NoticeRow(
-                      notice: shown[i],
-                      canDelete: canCreate ||
-                          shown[i].postedByUid == session.user.uid,
-                      onDelete: () async {
-                        final messenger = ScaffoldMessenger.of(context);
-                        final ok = await showDialog<bool>(
-                          context: context,
-                          builder: (c) => AlertDialog(
-                            title: const Text('Delete this notice?'),
-                            actions: [
-                              TextButton(
-                                onPressed: () => Navigator.pop(c, false),
-                                child: const Text('Keep it'),
-                              ),
-                              FilledButton(
-                                style: FilledButton.styleFrom(
-                                  backgroundColor: AppColors.danger,
-                                ),
-                                onPressed: () => Navigator.pop(c, true),
-                                child: const Text('Delete'),
-                              ),
-                            ],
-                          ),
-                        );
-                        if (ok != true) return;
-                        try {
-                          await NoticeService.instance.delete(
-                            collegeId: collegeId,
-                            noticeId: shown[i].id,
-                          );
-                          messenger.showSnackBar(
-                            const SnackBar(
-                              content: Text('Notice deleted'),
-                            ),
-                          );
-                        } catch (e) {
-                          messenger.showSnackBar(
-                            SnackBar(
-                              content: Text(AuthService.describeError(e)),
-                            ),
-                          );
-                        }
-                      },
-                    ),
-                    if (i != shown.length - 1)
-                      Divider(
-                        height: 1,
-                        indent: 20,
-                        endIndent: 20,
-                        color: AppColors.border,
-                      ),
-                  ],
-                ],
-              ),
-            );
-          },
-        ),
+            },
+          ),
       ],
     );
   }
@@ -283,8 +278,18 @@ class _NoticeRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
     ];
     final dateStr = notice.createdAt == null
         ? ''
@@ -396,12 +401,16 @@ class _NoticeRow extends StatelessWidget {
                       value: 'delete',
                       child: Row(
                         children: [
-                          Icon(Icons.delete_outline_rounded,
-                              size: 18, color: AppColors.danger),
-                          const SizedBox(width: 10),
-                          Text('Delete', style: TextStyle(
+                          Icon(
+                            Icons.delete_outline_rounded,
+                            size: 18,
                             color: AppColors.danger,
-                          )),
+                          ),
+                          SizedBox(width: 10),
+                          Text(
+                            'Delete',
+                            style: TextStyle(color: AppColors.danger),
+                          ),
                         ],
                       ),
                     ),

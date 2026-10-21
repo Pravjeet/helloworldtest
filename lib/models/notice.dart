@@ -65,8 +65,18 @@ class Notice {
   String? get expiryLabel {
     if (expiryDate == null) return null;
     const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
     ];
     return '${expiryDate!.day} ${months[expiryDate!.month - 1]} ${expiryDate!.year}';
   }

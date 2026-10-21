@@ -15,6 +15,7 @@ import '../../services/fine_service.dart';
 import '../../services/hostel_service.dart';
 import '../../services/request_service.dart';
 import '../../services/settings_service.dart';
+import '../../utils/enrollment_helpers.dart';
 import 'reset_student_data_dialog.dart';
 
 /// Largest logo photo accepted, in bytes. Base64 adds ~33% on top, and this
@@ -45,7 +46,7 @@ class SettingsPage extends StatelessWidget {
 
     if (!session.can(Perm.settingsManage)) {
       return AppCard(
-        padding: const EdgeInsets.symmetric(vertical: 54),
+        padding: EdgeInsets.symmetric(vertical: 54),
         child: Center(
           child: Text(
             'You don\'t have permission to change system settings.',
@@ -83,10 +84,7 @@ class SettingsPage extends StatelessWidget {
                         ? 'Configuration for this workspace.'
                         : 'Configuration for this workspace. '
                               'Last changed by ${s.updatedByName}.',
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: AppColors.textMuted,
-                    ),
+                    style: TextStyle(fontSize: 13, color: AppColors.textMuted),
                   ),
                 ],
               ),
@@ -105,6 +103,8 @@ class SettingsPage extends StatelessWidget {
             ),
             const SizedBox(height: 18),
             _SessionSection(collegeId: collegeId, value: s.session),
+            const SizedBox(height: 18),
+            _CourseRulesSection(collegeId: collegeId, value: s.courseRules),
             const SizedBox(height: 18),
             _FineCategoriesSection(
               collegeId: collegeId,
@@ -253,8 +253,7 @@ class _InstitutionSection extends StatefulWidget {
   State<_InstitutionSection> createState() => _InstitutionSectionState();
 }
 
-class _InstitutionSectionState extends State<_InstitutionSection>
-    with _Saving {
+class _InstitutionSectionState extends State<_InstitutionSection> with _Saving {
   late final Map<String, TextEditingController> _c;
 
   Uint8List? _logoBytes;
@@ -311,9 +310,11 @@ class _InstitutionSectionState extends State<_InstitutionSection>
     if (file == null || file.bytes == null) return;
 
     if (file.bytes!.lengthInBytes > _maxLogoBytes) {
-      setState(() => error =
-          'That image is too large (${(file.bytes!.lengthInBytes / 1024).round()} '
-          'KB). Please keep it under ${_maxLogoBytes ~/ 1024} KB.');
+      setState(
+        () => error =
+            'That image is too large (${(file.bytes!.lengthInBytes / 1024).round()} '
+            'KB). Please keep it under ${_maxLogoBytes ~/ 1024} KB.',
+      );
       return;
     }
 
@@ -419,10 +420,7 @@ class _InstitutionSectionState extends State<_InstitutionSection>
                       children: [
                         OutlinedButton.icon(
                           onPressed: busy ? null : _pickLogo,
-                          icon: const Icon(
-                            Icons.upload_rounded,
-                            size: 16,
-                          ),
+                          icon: const Icon(Icons.upload_rounded, size: 16),
                           label: Text(
                             _logoBytes == null ? 'Upload logo' : 'Change logo',
                           ),
@@ -770,10 +768,7 @@ class _Swatch extends StatelessWidget {
           const SizedBox(width: 9),
           Text(
             preset.label,
-            style: const TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-            ),
+            style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
           ),
         ],
       ),
@@ -795,12 +790,79 @@ class _SessionSection extends StatefulWidget {
 
 class _SessionSectionState extends State<_SessionSection> with _Saving {
   late final _current = TextEditingController(text: widget.value.current ?? '');
+
+  /// Blank means "derive it from current" — see [nextSessionAfter]. Editable
+  /// for the college whose sessions are not a simple +1.
+  late final _next = TextEditingController(text: widget.value.next ?? '');
   late bool _odd = widget.value.oddSemester;
 
   @override
   void dispose() {
     _current.dispose();
+    _next.dispose();
     super.dispose();
+  }
+
+  /// Puts the session back to the state a brand-new workspace starts in.
+  ///
+  /// Writes nulls rather than empty strings, which is the whole point of doing
+  /// this in one action instead of asking someone to clear two boxes: Academic
+  /// Records decides whether to show its "No academic session set" screen by
+  /// testing `session.current == null`, and a stray `''` slips past that test
+  /// and renders a blank name into "Backfill ".
+  ///
+  /// [name] is read by the caller from `Session.of(context)` in `build` and
+  /// passed in — looking it up here would throw, because the dialog below
+  /// pushes onto the root Navigator, above `SessionScope`.
+  Future<void> _resetSession(String name) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Reset the academic session?'),
+        content: const SizedBox(
+          width: 460,
+          child: Text(
+            'Clears the current and next session and puts the semester back to '
+            'Odd — the state a new workspace starts in. Academic Records '
+            'returns to "No academic session set", and backfill and promotion '
+            'stay unavailable until a session is set again.\n\n'
+            'No student, enrollment, room or fee data is touched, and nothing '
+            'here is permanent — typing the session back in restores it.',
+            style: TextStyle(height: 1.45),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Reset session'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+
+    await save(
+      () => SettingsService.instance.saveSession(
+        widget.collegeId,
+        const AcademicSession(),
+        byName: name,
+      ),
+      'Academic session reset',
+    );
+
+    // The controllers hold what was typed, not what was saved, so they have to
+    // be emptied too or the boxes go on showing a session that no longer
+    // exists until the page is rebuilt from scratch.
+    if (!mounted) return;
+    setState(() {
+      _current.clear();
+      _next.clear();
+      _odd = true;
+    });
   }
 
   @override
@@ -817,9 +879,8 @@ class _SessionSectionState extends State<_SessionSection> with _Saving {
         () => SettingsService.instance.saveSession(
           widget.collegeId,
           AcademicSession(
-            current: _current.text.trim().isEmpty
-                ? null
-                : _current.text.trim(),
+            current: _current.text.trim().isEmpty ? null : _current.text.trim(),
+            next: _next.text.trim().isEmpty ? null : _next.text.trim(),
             oddSemester: _odd,
           ),
           byName: name,
@@ -841,6 +902,16 @@ class _SessionSectionState extends State<_SessionSection> with _Saving {
                 ),
               ),
               const SizedBox(width: 16),
+              SizedBox(
+                width: 220,
+                child: _Field(
+                  _next,
+                  'Next session',
+                  hint: nextSessionAfter(_current.text) ?? '2027-28',
+                  enabled: !busy,
+                ),
+              ),
+              const SizedBox(width: 16),
               Padding(
                 padding: const EdgeInsets.only(bottom: 14),
                 child: SegmentedButton<bool>(
@@ -857,9 +928,176 @@ class _SessionSectionState extends State<_SessionSection> with _Saving {
               ),
             ],
           ),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Expanded(
+                child: Text(
+                  'Leave "Next session" blank to use ${nextSessionAfter(_current.text) ?? "current + 1"} '
+                  'automatically. Semesters currently running: $sems',
+                  style: TextStyle(fontSize: 12.5, color: AppColors.textMuted),
+                ),
+              ),
+              const SizedBox(width: 12),
+              TextButton.icon(
+                onPressed: busy ? null : () => _resetSession(name),
+                icon: const Icon(Icons.restart_alt_rounded, size: 17),
+                label: const Text('Reset session'),
+                style: TextButton.styleFrom(
+                  foregroundColor: AppColors.danger,
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CourseRulesSection extends StatefulWidget {
+  final String collegeId;
+  final List<CourseRule> value;
+
+  const _CourseRulesSection({required this.collegeId, required this.value});
+
+  @override
+  State<_CourseRulesSection> createState() => _CourseRulesSectionState();
+}
+
+class _CourseRulesSectionState extends State<_CourseRulesSection> with _Saving {
+  // Same empty-means-defaults pattern as fine categories: a workspace that
+  // has never opened this screen still gets a working seating policy.
+  late final List<CourseRule> _rows = widget.value.isEmpty
+      ? List.of(kDefaultCourseRules)
+      : List.of(widget.value);
+
+  @override
+  Widget build(BuildContext context) {
+    final name = Session.of(context).user.name;
+
+    return _Section(
+      title: 'Courses',
+      blurb:
+          'How long each course runs, and how its rooms are assigned — '
+          'shared every year, single once earned, or single throughout. '
+          'Drives annual promotion and the entitlement shown in Room '
+          'Allotment.',
+      busy: busy,
+      error: error,
+      onSave: () => save(() {
+        final clean = _rows
+            .where((r) => r.course.trim().isNotEmpty)
+            .map((r) => r.copyWith(course: r.course.trim()))
+            .toList();
+        if (clean.isEmpty) {
+          throw Exception('Keep at least one course.');
+        }
+        return SettingsService.instance.saveCourseRules(
+          widget.collegeId,
+          clean,
+          byName: name,
+        );
+      }, 'Courses saved'),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (var i = 0; i < _rows.length; i++)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Row(
+                children: [
+                  Expanded(
+                    flex: 2,
+                    child: TextFormField(
+                      key: ValueKey('course-$i'),
+                      initialValue: _rows[i].course,
+                      enabled: !busy,
+                      decoration: const InputDecoration(
+                        labelText: 'Course',
+                        hintText: 'UG',
+                        isDense: true,
+                      ),
+                      onChanged: (v) => _rows[i] = _rows[i].copyWith(course: v),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: TextFormField(
+                      key: ValueKey('years-$i'),
+                      initialValue: '${_rows[i].totalYears}',
+                      enabled: !busy,
+                      keyboardType: TextInputType.number,
+                      decoration: const InputDecoration(
+                        labelText: 'Years',
+                        isDense: true,
+                      ),
+                      onChanged: (v) => _rows[i] = _rows[i].copyWith(
+                        totalYears:
+                            int.tryParse(v.trim()) ?? _rows[i].totalYears,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    flex: 3,
+                    child: DropdownButtonFormField<CourseSeating>(
+                      key: ValueKey('seating-$i'),
+                      initialValue: _rows[i].seating,
+                      isExpanded: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Seating',
+                        isDense: true,
+                      ),
+                      items: CourseSeating.values
+                          .map(
+                            (v) => DropdownMenuItem(
+                              value: v,
+                              child: Text(
+                                v.label,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: busy
+                          ? null
+                          : (v) => setState(
+                              () => _rows[i] = _rows[i].copyWith(seating: v),
+                            ),
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: busy || _rows.length == 1
+                        ? null
+                        : () => setState(() => _rows.removeAt(i)),
+                    icon: const Icon(Icons.close_rounded, size: 18),
+                    tooltip: 'Remove',
+                  ),
+                ],
+              ),
+            ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: busy
+                  ? null
+                  : () => setState(
+                      () => _rows.add(
+                        const CourseRule(course: '', totalYears: 4),
+                      ),
+                    ),
+              icon: const Icon(Icons.add_rounded, size: 17),
+              label: const Text('Add course'),
+            ),
+          ),
+          const SizedBox(height: 4),
           Text(
-            'Semesters currently running: $sems',
-            style: TextStyle(fontSize: 12.5, color: AppColors.textMuted),
+            'Matched against a student\'s Course field, case-insensitively. A '
+            'course with no rule here has no policy enforced — students on it '
+            'are left to staff judgement rather than a guessed default.',
+            style: TextStyle(fontSize: 12, color: AppColors.textMuted),
           ),
         ],
       ),
@@ -873,20 +1111,17 @@ class _FineCategoriesSection extends StatefulWidget {
   final String collegeId;
   final List<FineCategory> value;
 
-  const _FineCategoriesSection({
-    required this.collegeId,
-    required this.value,
-  });
+  const _FineCategoriesSection({required this.collegeId, required this.value});
 
   @override
-  State<_FineCategoriesSection> createState() =>
-      _FineCategoriesSectionState();
+  State<_FineCategoriesSection> createState() => _FineCategoriesSectionState();
 }
 
 class _FineCategoriesSectionState extends State<_FineCategoriesSection>
     with _Saving {
-  late final List<FineCategory> _rows =
-      widget.value.isEmpty ? FineCategory.defaults : List.of(widget.value);
+  late final List<FineCategory> _rows = widget.value.isEmpty
+      ? FineCategory.defaults
+      : List.of(widget.value);
 
   @override
   Widget build(BuildContext context) {
@@ -894,17 +1129,20 @@ class _FineCategoriesSectionState extends State<_FineCategoriesSection>
 
     return _Section(
       title: 'Fine categories',
-      blurb: 'The reasons offered when imposing a fine, and what each '
+      blurb:
+          'The reasons offered when imposing a fine, and what each '
           'usually costs.',
       busy: busy,
       error: error,
       onSave: () => save(() {
         final clean = _rows
             .where((r) => r.name.trim().isNotEmpty)
-            .map((r) => FineCategory(
-                  name: r.name.trim(),
-                  defaultAmount: r.defaultAmount,
-                ))
+            .map(
+              (r) => FineCategory(
+                name: r.name.trim(),
+                defaultAmount: r.defaultAmount,
+              ),
+            )
             .toList();
         if (clean.isEmpty) {
           throw Exception('Keep at least one category.');
@@ -972,9 +1210,8 @@ class _FineCategoriesSectionState extends State<_FineCategoriesSection>
             child: TextButton.icon(
               onPressed: busy
                   ? null
-                  : () => setState(
-                      () => _rows.add(const FineCategory(name: '')),
-                    ),
+                  : () =>
+                        setState(() => _rows.add(const FineCategory(name: ''))),
               icon: const Icon(Icons.add_rounded, size: 17),
               label: const Text('Add category'),
             ),
@@ -1015,7 +1252,8 @@ class _TradesSectionState extends State<_TradesSection> with _Saving {
 
     return _Section(
       title: 'Trades & branches',
-      blurb: 'The programmes students can be recorded under. Offered '
+      blurb:
+          'The programmes students can be recorded under. Offered '
           'everywhere a trade is picked, and used to group the fines '
           'dashboard.',
       busy: busy,
@@ -1062,10 +1300,8 @@ class _TradesSectionState extends State<_TradesSection> with _Saving {
                         hintText: 'GCS',
                         isDense: true,
                       ),
-                      onChanged: (v) => _rows[i] = Trade(
-                        code: v,
-                        name: _rows[i].name,
-                      ),
+                      onChanged: (v) =>
+                          _rows[i] = Trade(code: v, name: _rows[i].name),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -1079,10 +1315,8 @@ class _TradesSectionState extends State<_TradesSection> with _Saving {
                         hintText: 'Computer Science & Engineering',
                         isDense: true,
                       ),
-                      onChanged: (v) => _rows[i] = Trade(
-                        code: _rows[i].code,
-                        name: v,
-                      ),
+                      onChanged: (v) =>
+                          _rows[i] = Trade(code: _rows[i].code, name: v),
                     ),
                   ),
                   IconButton(
@@ -1177,8 +1411,7 @@ class _DangerZoneState extends State<_DangerZone> {
             ),
             FilledButton(
               style: FilledButton.styleFrom(backgroundColor: AppColors.danger),
-              onPressed:
-                  controller.text.trim().toUpperCase() == phrase
+              onPressed: controller.text.trim().toUpperCase() == phrase
                   ? () => Navigator.pop(c, true)
                   : null,
               child: const Text('Do it'),
@@ -1203,9 +1436,11 @@ class _DangerZoneState extends State<_DangerZone> {
     }
   }
 
-  /// Counts non-admin accounts before opening the reset dialog, so its
-  /// confirmation states the real number rather than asking you to approve
-  /// "everyone".
+  /// The master reset. Unlike the rows below it this does not go through
+  /// [_confirm] — the scope is too broad for a one-line body and a snackbar,
+  /// so it gets its own dialog with the deleted/kept breakdown and live
+  /// progress. The roster is counted first so the confirmation can name a
+  /// real number rather than asking you to approve "everyone".
   Future<void> _resetAll(Session session) async {
     final messenger = ScaffoldMessenger.of(context);
     setState(() => _busy = true);
@@ -1247,9 +1482,12 @@ class _DangerZoneState extends State<_DangerZone> {
         children: [
           Row(
             children: [
-              Icon(Icons.warning_amber_rounded,
-                  size: 19, color: AppColors.danger),
-              const SizedBox(width: 8),
+              Icon(
+                Icons.warning_amber_rounded,
+                size: 19,
+                color: AppColors.danger,
+              ),
+              SizedBox(width: 8),
               Text(
                 'Danger zone',
                 style: TextStyle(
@@ -1295,10 +1533,11 @@ class _DangerZoneState extends State<_DangerZone> {
                       ),
                       const SizedBox(height: 3),
                       Text(
-                        'One button for a clean slate: every profile, mess fee '
-                        'record, fine, request and room assignment. Hostels, '
-                        'rooms, college details, roles and Super Admins are '
-                        'kept.',
+                        'One button for a clean slate: every profile and its '
+                        'sign-in account, mess fee record, fine, request, '
+                        'academic record and room assignment. Hostels, rooms, '
+                        'college details, roles and Super Admins are kept.'
+                        '${session.user.isSuperAdmin ? '' : '\nSuper Admin only.'}',
                         style: TextStyle(
                           fontSize: 12.5,
                           color: AppColors.danger,
@@ -1310,7 +1549,11 @@ class _DangerZoneState extends State<_DangerZone> {
                 ),
                 const SizedBox(width: 16),
                 FilledButton(
-                  onPressed: _busy ? null : () => _resetAll(session),
+                  // Super Admin only — see ResetService.resetStudentData,
+                  // which refuses anyone else before touching anything.
+                  onPressed: _busy || !session.user.isSuperAdmin
+                      ? null
+                      : () => _resetAll(session),
                   style: FilledButton.styleFrom(
                     backgroundColor: AppColors.danger,
                   ),
@@ -1322,12 +1565,14 @@ class _DangerZoneState extends State<_DangerZone> {
           Divider(height: 26, color: AppColors.border),
           _DangerRow(
             label: 'Delete every fine',
-            detail: 'Removes all fines, paid and unpaid. Students and rooms '
+            detail:
+                'Removes all fines, paid and unpaid. Students and rooms '
                 'are untouched.',
             busy: _busy,
             onTap: () => _confirm(
               title: 'Delete every fine?',
-              body: 'Every fine in this workspace will be removed — including '
+              body:
+                  'Every fine in this workspace will be removed — including '
                   'ones already marked paid. Student accounts, rooms and '
                   'office orders are not affected.',
               phrase: 'DELETE FINES',
@@ -1342,12 +1587,14 @@ class _DangerZoneState extends State<_DangerZone> {
           Divider(height: 26, color: AppColors.border),
           _DangerRow(
             label: 'Delete orphaned fines',
-            detail: 'Removes fines belonging to students who no longer '
+            detail:
+                'Removes fines belonging to students who no longer '
                 'exist. Current students\' fines are untouched.',
             busy: _busy,
             onTap: () => _confirm(
               title: 'Delete orphaned fines?',
-              body: 'Fines whose student no longer has an account — paid or '
+              body:
+                  'Fines whose student no longer has an account — paid or '
                   'unpaid — will be removed. Fines from anyone still in the '
                   'system are not touched.',
               phrase: 'DELETE ORPHAN FINES',
@@ -1367,12 +1614,14 @@ class _DangerZoneState extends State<_DangerZone> {
           Divider(height: 26, color: AppColors.border),
           _DangerRow(
             label: 'Delete every non-admin account',
-            detail: 'Removes all student and staff profiles, freeing their '
+            detail:
+                'Removes all student and staff profiles, freeing their '
                 'rooms. Super Admins and you are kept.',
             busy: _busy,
             onTap: () => _confirm(
               title: 'Delete every non-admin account?',
-              body: 'Every profile in this workspace except Super Admins and '
+              body:
+                  'Every profile in this workspace except Super Admins and '
                   'your own will be deleted, and any rooms they hold freed.\n\n'
                   'Their sign-in accounts are NOT removed — the app cannot do '
                   'that. Re-importing the same registration numbers in-app '
@@ -1394,19 +1643,22 @@ class _DangerZoneState extends State<_DangerZone> {
                 return 'Deleted ${outcome.deleted} profile(s), '
                     'freed ${outcome.vacated} bed(s), '
                     'removed ${outcome.finesDeleted} fine(s), '
-                    '${outcome.requestsDeleted} request(s)';
+                    '${outcome.requestsDeleted} request(s), '
+                    '${outcome.feesDeleted} fee record(s)';
               },
             ),
           ),
           Divider(height: 26, color: AppColors.border),
           _DangerRow(
             label: 'Delete orphaned requests',
-            detail: 'Removes requests raised by people who no longer exist. '
+            detail:
+                'Removes requests raised by people who no longer exist. '
                 'Current students\' requests are untouched.',
             busy: _busy,
             onTap: () => _confirm(
               title: 'Delete orphaned requests?',
-              body: 'Leave applications, complaints and room-change requests '
+              body:
+                  'Leave applications, complaints and room-change requests '
                   'whose author no longer has an account will be removed. '
                   'Requests from anyone still in the system — pending or '
                   'already decided — are not touched.',
@@ -1427,23 +1679,29 @@ class _DangerZoneState extends State<_DangerZone> {
           Divider(height: 26, color: AppColors.border),
           _DangerRow(
             label: 'Empty all rooms',
-            detail: 'Clears every room\'s occupants and resets occupancy to '
+            detail:
+                'Clears every room\'s occupants and resets occupancy to '
                 'zero. Use if deleted students are still shown occupying a '
                 'room.',
-            busy: _busy,
+            // Disabled, not refused half-way, for a role that can't write
+            // every part it touches — see Session.canEmptyAllRooms.
+            busy: _busy || !session.canEmptyAllRooms,
             onTap: () => _confirm(
               title: 'Empty all rooms?',
-              body: 'Every room in every hostel will be marked unoccupied, '
-                  'and each hostel\'s occupied-bed count reset to zero. Do '
-                  'this only when nobody actually holds a room — it does not '
-                  'check who still needs one.',
+              body:
+                  'Every room in every hostel is emptied, and every '
+                  'student loses their hostel and room. They stay on the '
+                  'roster and reappear in Room Allotment awaiting a room '
+                  '— nobody is deleted — but every allotment in the '
+                  'college is undone, and there is no undo.',
               phrase: 'EMPTY ROOMS',
               run: () async {
                 final result = await HostelService.instance.emptyAllRooms(
                   widget.collegeId,
                 );
                 return 'Cleared ${result.roomsCleared} room(s), freed '
-                    '${result.bedsFreed} bed(s)';
+                    '${result.bedsFreed} bed(s), unallotted '
+                    '${result.studentsFreed} student(s)';
               },
             ),
           ),

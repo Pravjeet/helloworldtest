@@ -1,3 +1,4 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 
@@ -17,6 +18,34 @@ Future<void> main() async {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
+
+    // Local cache on, and uncapped.
+    //
+    // Firestore bills per document read, and the free tier allows 50,000 a
+    // day — which a few thousand students burn through fast. With persistence
+    // the SDK keeps a local copy and re-attaches listeners using a resume
+    // token, so a reload asks "what changed?" instead of paying for the whole
+    // roster again. The default cache is 40 MB, small enough that the roster
+    // could be evicted between visits and re-fetched in full; unlimited keeps
+    // it. Must be set before Firestore is used for anything.
+    FirebaseFirestore.instance.settings = const Settings(
+      persistenceEnabled: true,
+      cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
+    );
+
+    // Persistence is deliberately NOT set here.
+    //
+    // It used to be pinned to SESSION on every startup, which was the right
+    // default for shared office machines but silently broke "keep me signed
+    // in": setPersistence migrates the *currently saved* session as well as
+    // future ones, so a person who had chosen LOCAL was downgraded back to
+    // tab-scoped on their very next visit, and the tick box appeared to do
+    // nothing.
+    //
+    // The choice now belongs to whoever is signing in, and is applied once at
+    // that moment — see [AuthService.signIn] and [AuthService.registerCollege],
+    // both of which default to SESSION so the safe behaviour is what you get
+    // without asking for anything.
   } catch (e) {
     startupError = e;
   }
@@ -44,7 +73,7 @@ class HostelApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Homi Hostel',
+      title: 'helloworld',
       debugShowCheckedModeBanner: false,
       theme: buildAppTheme(),
       home: startupError == null
@@ -69,11 +98,7 @@ class _StartupError extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(
-                Icons.cloud_off_rounded,
-                size: 44,
-                color: AppColors.danger,
-              ),
+              Icon(Icons.cloud_off_rounded, size: 44, color: AppColors.danger),
               const SizedBox(height: 16),
               const Text(
                 'Could not connect to Firebase',
@@ -83,10 +108,7 @@ class _StartupError extends StatelessWidget {
               Text(
                 '$error',
                 textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: AppColors.textMuted,
-                  fontSize: 13,
-                ),
+                style: TextStyle(color: AppColors.textMuted, fontSize: 13),
               ),
             ],
           ),

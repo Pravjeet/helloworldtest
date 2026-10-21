@@ -7,6 +7,7 @@ import '../core/session.dart';
 import '../core/theme.dart';
 import '../models/hostel_request.dart';
 import '../services/auth_service.dart';
+import '../services/enrollment_service.dart';
 import '../services/request_service.dart';
 
 /// The one and only dashboard chrome: sidebar + header + content area.
@@ -152,7 +153,7 @@ class _Sidebar extends StatelessWidget {
     final session = Session.of(context);
 
     return AnimatedContainer(
-      duration: const Duration(milliseconds: 180),
+      duration: Duration(milliseconds: 180),
       width: expanded ? 262 : 80,
       color: AppColors.sidebar,
       child: Column(
@@ -162,7 +163,7 @@ class _Sidebar extends StatelessWidget {
             height: 88,
             width: double.infinity,
             color: AppColors.sidebarDeep,
-            padding: const EdgeInsets.symmetric(horizontal: 18),
+            padding: EdgeInsets.symmetric(horizontal: 18),
             child: Row(
               children: [
                 WorkspaceLogo(
@@ -476,6 +477,11 @@ class _TopBar extends StatelessWidget {
             ),
             const SizedBox(width: 10),
           ],
+          if (session.canAny([Perm.academicView, Perm.academicManage]) &&
+              session.settings.session.current != null) ...[
+            const _SessionPickerPill(),
+            const SizedBox(width: 10),
+          ],
           const _Bell(),
           const SizedBox(width: 12),
           Container(
@@ -592,6 +598,174 @@ class _Pill extends StatelessWidget {
       ],
     ),
   );
+}
+
+/// Switches which session's data the Dashboard and Hostels & Rooms pages
+/// render, for this signed-in person only.
+///
+/// Deliberately not a write to System Settings — see the long comment on
+/// [Session.viewingSession] for why: that value drives Backfill and
+/// Promotion, and browsing 2025-26 here must never point either of those
+/// buttons at 2025-26.
+class _SessionPickerPill extends StatefulWidget {
+  const _SessionPickerPill();
+
+  @override
+  State<_SessionPickerPill> createState() => _SessionPickerPillState();
+}
+
+class _SessionPickerPillState extends State<_SessionPickerPill> {
+  /// Memoised per college+session — the walk-back is a handful of reads and
+  /// must not repeat on every rebuild of the shell, which is most of them.
+  Future<List<String>>? _sessions;
+  String? _key;
+
+  Future<List<String>> _sessionsFor(String collegeId, String current) {
+    final key = '$collegeId/$current';
+    if (_key != key || _sessions == null) {
+      _key = key;
+      _sessions = EnrollmentService.instance.sessionsWithData(
+        collegeId,
+        current,
+      );
+    }
+    return _sessions!;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final session = Session.of(context);
+    final current = session.settings.session.current!;
+    final viewing = session.effectiveSession ?? current;
+    final isHistory = session.isViewingHistory;
+
+    return FutureBuilder<List<String>>(
+      future: _sessionsFor(session.user.collegeId, current),
+      builder: (context, snap) {
+        final sessions = snap.data ?? [current];
+        return PopupMenuButton<String>(
+          tooltip: 'Switch which session you\'re viewing',
+          onSelected: (s) =>
+              session.onViewSession?.call(s == current ? null : s),
+          itemBuilder: (context) => [
+            for (final s in sessions)
+              PopupMenuItem(
+                value: s,
+                child: Row(
+                  children: [
+                    Icon(
+                      s == viewing
+                          ? Icons.radio_button_checked_rounded
+                          : Icons.radio_button_unchecked_rounded,
+                      size: 16,
+                      color: s == viewing
+                          ? AppColors.primary
+                          : AppColors.textMuted,
+                    ),
+                    const SizedBox(width: 10),
+                    Text(s),
+                    if (s == current) ...[
+                      const SizedBox(width: 6),
+                      Text(
+                        '· current',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: AppColors.textMuted,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+          ],
+          child: Container(
+            height: 34,
+            padding: const EdgeInsets.symmetric(horizontal: 11),
+            decoration: BoxDecoration(
+              color: isHistory ? AppColors.warningSoft : AppColors.card,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: isHistory ? AppColors.warning : AppColors.border,
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  isHistory ? Icons.history_rounded : Icons.event_available_rounded,
+                  size: 14,
+                  color: isHistory ? AppColors.warning : AppColors.textMuted,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  viewing,
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    color: isHistory ? AppColors.warning : AppColors.textStrong,
+                  ),
+                ),
+                const SizedBox(width: 3),
+                Icon(
+                  Icons.expand_more_rounded,
+                  size: 16,
+                  color: isHistory ? AppColors.warning : AppColors.textMuted,
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// A dismissible strip explaining that the page is showing a past session,
+/// with one tap back to the live one. Placed at the top of every screen this
+/// lens touches so it is never ambiguous which year is on screen.
+class HistoryBanner extends StatelessWidget {
+  const HistoryBanner({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final session = Session.of(context);
+    if (!session.isViewingHistory) return const SizedBox.shrink();
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: AppColors.warningSoft,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.warning.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.history_rounded, size: 18, color: AppColors.warning),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Viewing ${session.viewingSession} as it stood that year — a '
+              'read-only snapshot. Allotment, edits and other actions here '
+              'work on the live roster, not this one.',
+              style: TextStyle(
+                fontSize: 12.5,
+                height: 1.4,
+                color: AppColors.warning,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          TextButton(
+            onPressed: () => session.onViewSession?.call(null),
+            style: TextButton.styleFrom(foregroundColor: AppColors.warning),
+            child: const Text('Return to current'),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// Notification bell, counting what actually needs a decision.

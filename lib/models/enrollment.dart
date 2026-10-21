@@ -43,8 +43,8 @@ class Enrollment {
   /// been (re-)allotted yet this session.
   final int? roomCapacity;
 
-  /// The room capacity (1 = Single, 3 = 3-Seater) this student is entitled to
-  /// this session, per [requiredRoomCapacity] in enrollment_helpers.dart —
+  /// The room capacity (1 = Single, N = shared) this student is entitled to
+  /// this session, per `requiredRoomCapacity` in enrollment_helpers.dart —
   /// snapshotted at backfill/promotion time so the allotment screen can show
   /// it without recomputing the policy live. Null means the policy doesn't
   /// cover this student's course, so nothing is enforced for them.

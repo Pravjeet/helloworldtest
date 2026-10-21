@@ -172,7 +172,7 @@ export const TRADES = [
 export const IMPORT_COLUMNS = [
   'name', 'registrationNo', 'email', 'role', 'gender', 'phone',
   'course', 'year', 'trade', 'batch', 'sem', 'state',
-  'hostel', 'room', 'officeRoom', 'dateOfBirth', 'bloodGroup', 'address',
+  'hostel', 'room', 'dateOfBirth', 'bloodGroup', 'address',
   'guardianName', 'guardianRelation', 'guardianPhone', 'notes',
   'category', 'religion', 'admissionYear', 'motherName', 'permanentMobile',
   'section', 'city', 'pinCode',
@@ -334,8 +334,51 @@ export function initAdmin() {
   }
 
   const key = JSON.parse(readFileSync(found, 'utf8'));
+  assertKeyMatchesApp(key.project_id, found);
   initializeApp({ credential: cert(key) });
   return { auth: getAuth(), db: getFirestore(), projectId: key.project_id };
+}
+
+/**
+ * Refuses to run when the service-account key points at a different Firebase
+ * project than the app itself does.
+ *
+ * This is not hypothetical. A key for the wrong project authenticates fine,
+ * resolves a college fine, and reports "Deleted 1029 profiles" fine — against
+ * a database nobody is looking at. Meanwhile the app goes on showing every
+ * record you thought you had just deleted, which reads exactly like a caching
+ * bug and gets debugged as one for hours.
+ *
+ * The app's project id is read from `.firebaserc`, which is the file
+ * `firebase deploy` uses, so if this check passes the script is talking to
+ * whatever the deployed app talks to. Missing or unreadable `.firebaserc` is
+ * not fatal — plenty of checkouts do not have one — but a *mismatch* is.
+ */
+function assertKeyMatchesApp(keyProjectId, keyPath) {
+  const rcPath = resolve(HERE, '..', '.firebaserc');
+  if (!existsSync(rcPath)) return;
+
+  let appProjectId;
+  try {
+    appProjectId = JSON.parse(readFileSync(rcPath, 'utf8'))?.projects?.default;
+  } catch {
+    return; // Malformed .firebaserc is the app's problem, not ours to enforce.
+  }
+  if (!appProjectId || appProjectId === keyProjectId) return;
+
+  console.error(
+    '\nWRONG PROJECT — refusing to run.\n\n' +
+    `  The app  (.firebaserc)      -> ${appProjectId}\n` +
+    `  This key (serviceAccountKey) -> ${keyProjectId}\n\n` +
+    'Anything this script did would land in a database the app never reads,\n' +
+    'so the app would keep showing the data you were trying to change.\n\n' +
+    `Generate a key for ${appProjectId}:\n` +
+    '  Firebase console -> pick that project -> Project Settings ->\n' +
+    '  Service Accounts -> Generate new private key\n\n' +
+    `Then replace:  ${keyPath}\n\n` +
+    `If ${keyProjectId} really is the one you want, point .firebaserc at it.\n`
+  );
+  process.exit(1);
 }
 
 /**

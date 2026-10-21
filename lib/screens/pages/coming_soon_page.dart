@@ -50,11 +50,7 @@ class ComingSoonPage extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 18),
-          StatusPill(
-            'NOT BUILT YET',
-            AppColors.warning,
-            AppColors.warningSoft,
-          ),
+          StatusPill('NOT BUILT YET', AppColors.warning, AppColors.warningSoft),
         ],
       ),
     );

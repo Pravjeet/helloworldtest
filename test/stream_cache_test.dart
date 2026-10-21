@@ -125,6 +125,41 @@ void main() {
       await controller.close();
     });
 
+    test('after an error, the next listener opens a fresh query', () async {
+      // Firestore ends a listener after permission-denied. Keeping the dead
+      // subscription meant a page reopened after a rules deploy replayed the
+      // old error until sign-out, and never saw the data it may now read.
+      var opened = 0;
+      final controllers = <StreamController<int>>[];
+      final cached = CachedStream<int>(() {
+        opened++;
+        final c = StreamController<int>.broadcast();
+        controllers.add(c);
+        return c.stream;
+      });
+
+      final subA = cached.listen((_) {}, onError: (_) {});
+      await Future<void>.delayed(Duration.zero);
+      controllers.last.addError(StateError('permission-denied'));
+      await Future<void>.delayed(Duration.zero);
+
+      final seen = <int>[];
+      final subB = cached.listen(seen.add, onError: (_) {});
+      await Future<void>.delayed(Duration.zero);
+      expect(opened, 2, reason: 'the dead query must be replaced');
+
+      controllers.last.add(7);
+      await Future<void>.delayed(Duration.zero);
+      expect(seen, [7]);
+
+      await subA.cancel();
+      await subB.cancel();
+      await cached.dispose();
+      for (final c in controllers) {
+        await c.close();
+      }
+    });
+
     test('disposeAll drops the query and the cached value', () async {
       var opened = 0;
       final controller = StreamController<int>.broadcast();

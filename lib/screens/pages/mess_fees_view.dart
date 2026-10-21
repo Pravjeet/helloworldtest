@@ -112,7 +112,8 @@ class _MessFeesViewState extends State<MessFeesView> {
                   icon: Icons.info_outline_rounded,
                 ),
               ],
-              if (_config.notes != null && _config.notes!.trim().isNotEmpty) ...[
+              if (_config.notes != null &&
+                  _config.notes!.trim().isNotEmpty) ...[
                 const SizedBox(height: 14),
                 Text(
                   _config.notes!,
@@ -182,7 +183,8 @@ class _MessFeesViewState extends State<MessFeesView> {
         DropdownButtonFormField<String>(
           initialValue: _key(_month),
           decoration: InputDecoration(
-            helperText: '${r.daysInMonth} days'
+            helperText:
+                '${r.daysInMonth} days'
                 '${_config.billingDays != null ? ' (fixed billing period)' : ''}',
           ),
           items: months
@@ -273,11 +275,7 @@ class _MessFeesViewState extends State<MessFeesView> {
       child: Center(
         child: Column(
           children: [
-            Icon(
-              Icons.payments_rounded,
-              size: 40,
-              color: AppColors.textMuted,
-            ),
+            Icon(Icons.payments_rounded, size: 40, color: AppColors.textMuted),
             const SizedBox(height: 14),
             const Text(
               'Mess charges haven\'t been set.',
@@ -319,15 +317,13 @@ class _MessFeesViewState extends State<MessFeesView> {
   Future<void> _editConfig() async {
     final saved = await showDialog<bool>(
       context: context,
-      builder: (_) => _ConfigDialog(
-        collegeId: widget.collegeId,
-        config: _config,
-      ),
+      builder: (_) =>
+          _ConfigDialog(collegeId: widget.collegeId, config: _config),
     );
     if (saved == true && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Mess charges updated')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Mess charges updated')));
     }
   }
 
@@ -387,8 +383,7 @@ class _Breakdown extends StatelessWidget {
           _Line(
             'Per day',
             '$symbol${r.perDay.toStringAsFixed(2)}',
-            caption:
-                '$symbol${_money(r.monthlyCharge)} ÷ ${r.daysInMonth}',
+            caption: '$symbol${_money(r.monthlyCharge)} ÷ ${r.daysInMonth}',
           ),
           const SizedBox(height: 10),
           _Line(
@@ -407,7 +402,7 @@ class _Breakdown extends StatelessWidget {
             valueColor: blocked ? AppColors.textMuted : AppColors.success,
           ),
           Padding(
-            padding: const EdgeInsets.symmetric(vertical: 14),
+            padding: EdgeInsets.symmetric(vertical: 14),
             child: Divider(height: 1, color: AppColors.border),
           ),
           Row(
@@ -459,17 +454,11 @@ class _Line extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              label,
-              style: const TextStyle(fontSize: 13.5, height: 1.3),
-            ),
+            Text(label, style: const TextStyle(fontSize: 13.5, height: 1.3)),
             if (caption != null)
               Text(
                 caption!,
-                style: TextStyle(
-                  fontSize: 11.5,
-                  color: AppColors.textMuted,
-                ),
+                style: TextStyle(fontSize: 11.5, color: AppColors.textMuted),
               ),
           ],
         ),
@@ -625,9 +614,7 @@ class _ConfigDialogState extends State<_ConfigDialog> {
     _charge = TextEditingController(
       text: c.monthlyCharge > 0 ? _money(c.monthlyCharge) : '',
     );
-    _billingDays = TextEditingController(
-      text: c.billingDays?.toString() ?? '',
-    );
+    _billingDays = TextEditingController(text: c.billingDays?.toString() ?? '');
     _minRebate = TextEditingController(
       text: c.minRebateDays > 0 ? c.minRebateDays.toString() : '',
     );
@@ -721,9 +708,7 @@ class _ConfigDialogState extends State<_ConfigDialog> {
                       child: TextFormField(
                         controller: _symbol,
                         enabled: !_busy,
-                        decoration: const InputDecoration(
-                          labelText: 'Symbol',
-                        ),
+                        decoration: const InputDecoration(labelText: 'Symbol'),
                       ),
                     ),
                   ],
@@ -735,7 +720,8 @@ class _ConfigDialogState extends State<_ConfigDialog> {
                   keyboardType: TextInputType.number,
                   decoration: const InputDecoration(
                     labelText: 'Fixed billing days (optional)',
-                    helperText: 'Leave blank to divide by the real length of '
+                    helperText:
+                        'Leave blank to divide by the real length of '
                         'each month',
                   ),
                 ),

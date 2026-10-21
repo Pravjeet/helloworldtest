@@ -31,14 +31,34 @@ dependencies:
   flutter:
     sdk: flutter
 
+  # The following adds the Cupertino Icons font to your application.
+  # Use with the CupertinoIcons class for iOS style icons.
+  cupertino_icons: ^1.0.8
   firebase_core: ^2.32.0
   firebase_auth: ^4.19.7
   cloud_firestore: ^4.17.5
+
+  # Saved sign-ins. Passwords go to the OS keychain (Windows Credential
+  # Manager / Keychain / Keystore), never to a plain file or SharedPreferences.
   flutter_secure_storage: ^9.2.2
+
+  # Reading the college's public WordPress feed, and opening the PDFs it
+  # links to in the user's browser.
   http: ^1.2.0
   url_launcher: ^6.2.5
+
+  # Bar charts for the fines mini-dashboard.
   fl_chart: ^0.69.0
+
+  # Picking an office-order photo to store inline in Firestore — there's no
+  # Firebase Storage on the free Spark plan. Chosen over image_picker because
+  # it also works on Windows desktop, not just mobile/web.
   file_picker: ^8.0.7
+
+  # JPEG-encoding student photos. dart:ui can only encode PNG, and a PNG
+  # photo is ~6x the size — thousands of them would not fit the Spark plan's
+  # 1 GiB Firestore storage.
+  image: ^4.10.1
 
 dev_dependencies:
   flutter_test:
@@ -62,10 +82,11 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
-  # To add assets to your application, add an assets section, like this:
+  # The hostels (and their room layouts) built in hostel_app, seeded into a
+  # workspace the first time its super admin signs in. See
+  # lib/services/default_hostels.dart.
   assets:
-    - assets/hostel.jpg
-  #   - images/a_dot_ham.jpeg
+    - assets/default_hostels.json
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

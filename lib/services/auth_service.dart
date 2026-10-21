@@ -1,11 +1,16 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 
+import '../core/hostel_codes.dart';
 import '../core/identity.dart';
 import '../core/permissions.dart';
 import '../models/app_role.dart';
 import '../models/app_user.dart';
+import '../utils/web_update.dart';
+import 'office_order_service.dart';
+import 'photo_service.dart';
 import 'stream_cache.dart';
 
 /// All authentication + provisioning logic. Widgets never touch
@@ -29,6 +34,15 @@ class AuthService {
     required String email,
     required String password,
   }) async {
+    // Registration signs the new owner in, so it needs the same safe default
+    // as [signIn] — without this it would inherit Firebase's web default of
+    // LOCAL and quietly outlive the browser on a machine nobody chose that
+    // for. There is no tick box on the registration form; a workspace owner
+    // can opt in next time they sign in.
+    if (kIsWeb) {
+      await _auth.setPersistence(Persistence.SESSION);
+    }
+
     final cred = await _auth.createUserWithEmailAndPassword(
       email: email.trim(),
       password: password,
@@ -91,37 +105,7 @@ class AuthService {
       'createdAt': FieldValue.serverTimestamp(),
     });
 
-    try {
-      await batch.commit();
-    } catch (e) {
-      // The batch is atomic, so nothing was written — but the Auth account
-      // above already exists. Leaving it there is what turns one failure into
-      // a dead end: the retry dies on `email-already-in-use` before it ever
-      // reaches the batch, and the only way out is the Firebase console.
-      // Deleting is safe here and cannot hit `requires-recent-login`, since
-      // this session is seconds old.
-      //
-      // Best-effort: if the cleanup itself fails, the original error is the
-      // one worth showing, not a complaint about the cleanup.
-      try {
-        await user.delete();
-      } catch (_) {}
-
-      // permission-denied here means one thing in practice — the rules on
-      // this Firebase project are older than the app. The generic
-      // "you don't have permission" is true but useless during registration,
-      // where there is no permission to grant yet.
-      if (e is FirebaseException && e.code == 'permission-denied') {
-        throw AuthFailure(
-          'The database rejected the write, which during registration means '
-          'this Firebase project\'s security rules are out of date. Deploy '
-          'them with:\n\n'
-          '    firebase deploy --only firestore:rules,firestore:indexes\n\n'
-          'then register again.',
-        );
-      }
-      rethrow;
-    }
+    await batch.commit();
   }
 
   // ---------------------------------------------------------------------
@@ -130,14 +114,39 @@ class AuthService {
   /// [identifier] may be a real email address or a registration number —
   /// see [Identity]. The number is mapped to a synthetic address before it
   /// reaches Firebase.
+  /// [staySignedIn] chooses how long the credential outlives this tab, and is
+  /// the whole of the "keep me signed in" decision.
+  ///
+  /// The default is deliberately the *safe* one. Firebase's web default is
+  /// LOCAL — the session survives closing the browser entirely — which on the
+  /// shared office machines this runs on hands the next person a live warden
+  /// session. SESSION scopes the credential to the tab: close it and the next
+  /// visit starts at the login screen, while an accidental F5 mid-task still
+  /// keeps you signed in.
+  ///
+  /// Opting in is therefore per-person and per-machine, which is the only way
+  /// it can be correct — the office desk and someone's own laptop want
+  /// opposite answers, and the app cannot tell which it is running on.
+  ///
+  /// Web-only in FlutterFire; it throws on Windows and Android, where the OS
+  /// account model already isolates users.
   Future<void> signIn({
     required String identifier,
     required String password,
+    bool staySignedIn = false,
   }) async {
+    if (kIsWeb) {
+      await _auth.setPersistence(
+        staySignedIn ? Persistence.LOCAL : Persistence.SESSION,
+      );
+    }
     await _auth.signInWithEmailAndPassword(
       email: Identity.toAuthEmail(identifier),
       password: password,
     );
+    // A login screen left open across a deploy would otherwise sign the user
+    // into last week's app. The session survives the reload either way.
+    if (kIsWeb) await reloadIfNewVersion();
   }
 
   /// Signs out and drops every cached query.
@@ -148,6 +157,9 @@ class AuthService {
   /// the login screen on the way out.
   Future<void> signOut() async {
     await StreamCaches.disposeAll();
+    HostelCodes.update(const []);
+    PhotoService.instance.clearCache();
+    OfficeOrderService.instance.clearCache();
     await _auth.signOut();
   }
 
@@ -240,22 +252,41 @@ class AuthService {
   // Session loading
   // ---------------------------------------------------------------------
 
+  // These three sit in nested StreamBuilders at the root of AuthGate, so they
+  // are re-evaluated on every rebuild of the entire app. Single documents each,
+  // but the most frequently re-created streams in the codebase — and the pool
+  // is what stops each rebuild from re-reading them. See [CachedStream].
+
+  final CachedStreamPool<AppUser?> _profilePool = CachedStreamPool();
+  final CachedStreamPool<AppRole?> _rolePool = CachedStreamPool();
+  final CachedStreamPool<String> _collegeNamePool = CachedStreamPool();
+
   /// Live view of the signed-in user's profile document.
-  Stream<AppUser?> watchProfile(String uid) => _db
-      .collection('users')
-      .doc(uid)
-      .snapshots()
-      .map((d) => d.exists ? AppUser.fromMap(d.id, d.data()!) : null);
+  ///
+  /// Also called with other people's uids from the user detail page, hence
+  /// keying by uid rather than holding a single stream.
+  Stream<AppUser?> watchProfile(String uid) => _profilePool.stream(
+    uid,
+    () => _db
+        .collection('users')
+        .doc(uid)
+        .snapshots()
+        .map((d) => d.exists ? AppUser.fromMap(d.id, d.data()!) : null),
+  );
 
   /// Live view of a role document, so a permission change applied by the
   /// admin reaches the affected user's sidebar without them re-logging in.
-  Stream<AppRole?> watchRole(String collegeId, String roleId) => _db
-      .collection('colleges')
-      .doc(collegeId)
-      .collection('roles')
-      .doc(roleId)
-      .snapshots()
-      .map((d) => d.exists ? AppRole.fromMap(d.id, d.data()!) : null);
+  Stream<AppRole?> watchRole(String collegeId, String roleId) =>
+      _rolePool.stream(
+        '$collegeId/$roleId',
+        () => _db
+            .collection('colleges')
+            .doc(collegeId)
+            .collection('roles')
+            .doc(roleId)
+            .snapshots()
+            .map((d) => d.exists ? AppRole.fromMap(d.id, d.data()!) : null),
+      );
 
   Future<String> collegeName(String collegeId) async {
     final doc = await _db.collection('colleges').doc(collegeId).get();
@@ -264,11 +295,14 @@ class AuthService {
 
   /// Live college name, so renaming the institution in System Settings shows
   /// up in the sidebar immediately rather than after a re-login.
-  Stream<String> watchCollegeName(String collegeId) => _db
-      .collection('colleges')
-      .doc(collegeId)
-      .snapshots()
-      .map((d) => d.data()?['name'] as String? ?? 'Institution');
+  Stream<String> watchCollegeName(String collegeId) => _collegeNamePool.stream(
+    collegeId,
+    () => _db
+        .collection('colleges')
+        .doc(collegeId)
+        .snapshots()
+        .map((d) => d.data()?['name'] as String? ?? 'Institution'),
+  );
 
   // ---------------------------------------------------------------------
   // Creating a sub-user without kicking the admin out of their own session.
@@ -288,10 +322,19 @@ class AuthService {
   /// app. A bulk import should open **one** and pass it to every
   /// [createSubUser] call, then [closeProvisioningApp] at the end. Doing it
   /// per row is what made a 30-row import take minutes.
+  ///
+  /// Named with a counter as well as the time: on web the clock only has
+  /// millisecond resolution, so two apps opened together — one per lane when
+  /// sign-in accounts are removed in parallel — would otherwise get the same
+  /// name, and Firebase refuses a duplicate.
   Future<FirebaseApp> openProvisioningApp() => Firebase.initializeApp(
-    name: 'user-provisioning-${DateTime.now().microsecondsSinceEpoch}',
+    name:
+        'user-provisioning-${DateTime.now().microsecondsSinceEpoch}'
+        '-${_provisioningSeq++}',
     options: Firebase.app().options,
   );
+
+  static int _provisioningSeq = 0;
 
   Future<void> closeProvisioningApp(FirebaseApp app) async {
     try {
@@ -403,11 +446,9 @@ class AuthService {
     FirebaseApp? temp = app;
     try {
       temp ??= await openProvisioningApp();
-      final cred = await FirebaseAuth.instanceFor(app: temp)
-          .createUserWithEmailAndPassword(
-            email: email.trim(),
-            password: password,
-          );
+      final cred = await FirebaseAuth.instanceFor(
+        app: temp,
+      ).createUserWithEmailAndPassword(email: email.trim(), password: password);
       final uid = cred.user!.uid;
 
       // Deliberately NOT calling updateDisplayName: it is a whole extra network
@@ -512,10 +553,13 @@ extension AuthDeleteResultX on AuthDeleteResult {
   String get explanation => switch (this) {
     AuthDeleteResult.deleted => 'sign-in account removed',
     AuthDeleteResult.alreadyGone => 'no sign-in account existed',
+    // Not a definite "kept": with Firebase's email enumeration protection on
+    // (the default for new projects), signing in to an account that no
+    // longer exists fails exactly like a wrong password does.
     AuthDeleteResult.wrongPassword =>
-      'sign-in account KEPT — its password is not the registration number, '
-          'so re-adding this person will say "email already in use". '
-          'Run: node delete-students.js --orphans --commit',
+      'could not sign in as this account — its password was changed, or it '
+          'was already removed. If re-adding this person says "email already '
+          'in use", run: node delete-students.js --orphans --commit',
     AuthDeleteResult.noCredential =>
       'sign-in account KEPT — no derivable password. '
           'Run: node delete-students.js --orphans --commit',

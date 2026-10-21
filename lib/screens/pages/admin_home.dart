@@ -6,7 +6,7 @@ import 'package:flutter/material.dart';
 import '../../core/permissions.dart';
 import '../../core/session.dart';
 import '../../core/theme.dart';
-import '../../models/app_user.dart';
+import '../../models/app_role.dart';
 import '../../models/fee.dart';
 import '../../models/fine.dart';
 import '../../models/hostel.dart';
@@ -14,6 +14,7 @@ import '../../models/hostel_request.dart';
 import '../../models/mess.dart';
 import '../../models/notice.dart';
 import '../../services/data_service.dart';
+import '../../services/enrollment_service.dart';
 import '../../services/fee_service.dart';
 import '../../services/fine_service.dart';
 import '../../services/hostel_service.dart';
@@ -47,6 +48,7 @@ class AdminHome extends StatelessWidget {
       builder: (context, data) => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          const HistoryBanner(),
           _KpiStrip(data: data),
           const SizedBox(height: 16),
           _Row3(
@@ -95,11 +97,7 @@ class _Row3 extends StatelessWidget {
   final Widget second;
   final Widget third;
 
-  const _Row3({
-    required this.first,
-    required this.second,
-    required this.third,
-  });
+  const _Row3({required this.first, required this.second, required this.third});
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(
@@ -149,37 +147,98 @@ class _Row3 extends StatelessWidget {
 // Data
 // =====================================================================
 
+/// The dashboard's numbers for one past session, derived from that session's
+/// enrollment records rather than from today's live documents.
+///
+/// [heads] and [occupiedBeds] deliberately count every enrollment with a room
+/// rather than filtering by whether the account is active today —
+/// deactivation is a live-account concept, and a past session's occupancy is
+/// a record of who was actually housed that year regardless of what happened
+/// to their account since.
+class _HistoricalSnapshot {
+  final int residents;
+  final Map<String, int> heads;
+  final int occupiedBeds;
+
+  const _HistoricalSnapshot({
+    required this.residents,
+    required this.heads,
+    required this.occupiedBeds,
+  });
+}
+
 /// Everything the dashboard renders, resolved together.
 class _Data {
-  final List<AppUser> users;
+  /// Counted, not downloaded. See [DataService.countUsersByRole] — the roster
+  /// is 2,650 documents on this campus and the dashboard only ever wanted
+  /// seven integers from it.
+  final UserCounts counts;
+
   final List<Hostel> hostels;
   final List<HostelRequest> requests;
   final List<Fine> fines;
-  final List<FeeRecord> fees;
+
+  /// Only the current month's records — see [_FeedState]. Everything older is
+  /// carried by [revenueByPeriod] as a total, not as documents.
+  final List<FeeRecord> feesThisMonth;
+
+  /// Collected per `YYYY-MM`, from a `sum()` aggregation rather than from
+  /// reading the records.
+  ///
+  /// Null while in flight, and if the aggregation fails. Deliberately not
+  /// defaulted to an empty map: every consumer here reads a missing period as
+  /// zero, so a failed read would render as a confident "collected nothing"
+  /// across six months rather than as "not loaded".
+  final Map<String, num>? revenueByPeriod;
+
+  /// The dozen most recent payments, for the activity feed and the payments
+  /// card. Read with a server-side limit, not sorted out of a larger set.
+  final List<FeeRecord> recentFees;
+
   final List<Notice> notices;
   final MessConfig mess;
 
+  /// Set only while viewing a past session. See [_FeedState._historicalFor].
+  final _HistoricalSnapshot? historical;
+
   const _Data({
-    required this.users,
+    required this.counts,
     required this.hostels,
     required this.requests,
     required this.fines,
-    required this.fees,
+    required this.feesThisMonth,
+    required this.revenueByPeriod,
+    required this.recentFees,
     required this.notices,
     required this.mess,
+    this.historical,
   });
 
-  List<AppUser> get residents => users.where((u) => u.isAllotted).toList();
-  List<AppUser> get staff =>
-      users.where((u) => !u.isAllotted && !u.isSuperAdmin).toList();
-  int get unassigned => users.where((u) => u.roleId == null).length;
-  int get inactive => users.where((u) => !u.isActive).length;
+  // Residents and occupancy are the only figures this workspace can honestly
+  // reconstruct for a past year — they come straight off that session's
+  // Enrollment records. Staff, fees, requests, fines and notices are never
+  // session-stamped (a role held today says nothing about who held it in
+  // 2025-26, and nobody asked for that history to be fabricated), so those
+  // stay live even while [historical] is set. `historical == null` is
+  // exactly "viewing the live session", so every getter below falls back to
+  // today's numbers with no special-casing at the call site.
+  int get residents => historical?.residents ?? counts.residents;
+  int get staff => counts.staff;
+  int get totalPeople => counts.total;
+  int get unassigned => counts.unassigned;
+  int get inactive => counts.inactive;
 
   int get totalRooms => hostels.fold(0, (a, h) => a + h.roomCount);
   int get totalBeds => hostels.fold(0, (a, h) => a + h.bedCount);
-  int get occupiedBeds => hostels.fold(0, (a, h) => a + h.occupiedBeds);
+  int get occupiedBeds =>
+      historical?.occupiedBeds ??
+      hostels.fold(0, (a, h) => a + h.occupiedBeds);
   int get freeBeds => (totalBeds - occupiedBeds).clamp(0, totalBeds);
   double get occupancy => totalBeds == 0 ? 0 : occupiedBeds / totalBeds;
+
+  /// Per-hostel occupied-bed count for whichever session is on screen. Reads
+  /// off the hostel documents live, or off [historical] when set.
+  int occupiedIn(Hostel h) => historical?.heads[h.id] ?? h.occupiedBeds;
 
   List<HostelRequest> get openRequests =>
       requests.where((r) => r.status.isOpen).toList();
@@ -190,118 +249,211 @@ class _Data {
 
   String get thisPeriod => periodOf(DateTime.now());
 
-  List<FeeRecord> get thisMonthFees =>
-      fees.where((f) => f.period == thisPeriod).toList();
+  List<FeeRecord> get thisMonthFees => feesThisMonth;
 
   num get collectedThisMonth =>
       thisMonthFees.fold<num>(0, (a, f) => a + f.amount);
 
   /// What the mess *should* bring in this month if every resident pays.
-  num get expectedThisMonth => mess.monthlyCharge * residents.length;
+  num get expectedThisMonth => mess.monthlyCharge * residents;
 
   num get messPending =>
       (expectedThisMonth - collectedThisMonth).clamp(0, double.infinity);
 
+  /// Residents with no payment recorded this month.
+  ///
+  /// Subtraction rather than a set difference: the fee records for the month
+  /// are streamed anyway and each names one student, so counting the distinct
+  /// payers and taking them off the resident count gives the same answer
+  /// without the roster the set difference used to need.
   int get unpaidResidents {
-    final paid = thisMonthFees.map((f) => f.studentUid).toSet();
-    return residents.where((r) => !paid.contains(r.uid)).length;
+    final paid = thisMonthFees.map((f) => f.studentUid).toSet().length;
+    return (residents - paid).clamp(0, residents);
   }
 
   /// The last 7 periods, oldest first — the x-axis every trend here shares.
   List<String> get trendPeriods =>
       recentPeriods(DateTime.now(), count: 7).reversed.toList();
 
-  /// Head-count at the END of each period, from users' `createdAt`.
-  ///
-  /// Cumulative rather than per-month arrivals: the tile shows a total, so a
-  /// sparkline of monthly intake underneath it would be a different quantity
-  /// wearing the same label.
-  List<num> growthOf(bool Function(AppUser) test) {
-    final matched = users.where(test).toList();
-    return [
-      for (final p in trendPeriods)
-        matched
-            .where(
-              (u) =>
-                  u.createdAt == null || periodOf(u.createdAt!).compareTo(p) <= 0,
-            )
-            .length,
-    ];
-  }
+  // The KPI sparklines used to be built by walking every user's `createdAt`.
+  // That is the one figure count() cannot answer cheaply: it needs a count per
+  // period, and the resident/staff split is not a single indexed field. Rather
+  // than keep 2,650 documents in memory to draw two thumbnail charts, the
+  // sparklines were dropped — see the note in DEVELOPMENT.md.
 
-  /// How many matching users first appeared this month.
-  int addedThisMonth(bool Function(AppUser) test) => users
-      .where(test)
-      .where((u) => u.createdAt != null && periodOf(u.createdAt!) == thisPeriod)
-      .length;
-
-  List<num> get feeTrend => [
-    for (final p in trendPeriods)
-      fees.where((f) => f.period == p).fold<num>(0, (a, f) => a + f.amount),
-  ];
+  /// Empty when the totals aren't in — [_Kpi] hides a sparkline it can't
+  /// draw, which is the right outcome for "unknown".
+  List<num> get feeTrend => revenueByPeriod == null
+      ? const []
+      : [for (final p in trendPeriods) revenueByPeriod![p] ?? 0];
 
   /// Things a warden should actually look at. Counted, not guessed — an alert
   /// tile that invents urgency trains people to ignore it.
   List<String> get alerts => [
     if (unassigned > 0) '$unassigned user(s) have no role assigned',
     if (inactive > 0) '$inactive account(s) are deactivated',
-    if (openRequests.length > 10)
-      '${openRequests.length} requests are waiting',
+    if (openRequests.length > 10) '${openRequests.length} requests are waiting',
     if (!mess.isConfigured) 'No monthly mess charge is set',
     if (hostels.isEmpty) 'No hostels have been created yet',
   ];
 }
 
 /// Fans out the streams the dashboard needs and hands over one snapshot.
-class _Feed extends StatelessWidget {
+///
+/// Stateful only so the one-shot reads — the revenue trend, the recent
+/// payments list and the user counts — are issued once. Built inside `build()`
+/// they would re-run on every rebuild, which is the same mistake that made the
+/// streams expensive; see `CachedStream` in services/stream_cache.dart.
+class _Feed extends StatefulWidget {
   final String collegeId;
   final Widget Function(BuildContext, _Data) builder;
 
   const _Feed({required this.collegeId, required this.builder});
 
   @override
-  Widget build(BuildContext context) {
-    // Six months back covers the revenue trend without pulling years of
-    // history the page never draws.
-    final from = recentPeriods(DateTime.now(), count: 7).last;
+  State<_Feed> createState() => _FeedState();
+}
 
-    return StreamBuilder<List<AppUser>>(
-      stream: DataService.instance.watchUsers(collegeId),
-      builder: (context, users) => StreamBuilder<List<Hostel>>(
-        stream: HostelService.instance.watchHostels(collegeId),
-        builder: (context, hostels) => StreamBuilder<List<HostelRequest>>(
-          stream: RequestService.instance.watchAll(collegeId),
-          builder: (context, requests) => StreamBuilder<List<Fine>>(
-            stream: FineService.instance.watchAll(collegeId),
-            builder: (context, fines) => StreamBuilder<List<FeeRecord>>(
-              stream: FeeService.instance.watchSince(collegeId, from),
-              builder: (context, fees) => StreamBuilder<List<Notice>>(
-                stream: NoticeService.instance.watchAll(collegeId),
-                builder: (context, notices) => StreamBuilder<MessConfig>(
-                  stream: MessService.instance.watchConfig(collegeId),
-                  builder: (context, mess) {
-                    // Rendered as soon as users arrive; the rest fill in as
-                    // they land. Blocking on all seven would leave the page
-                    // blank for as long as the slowest one takes.
-                    if (!users.hasData) {
-                      return const Padding(
-                        padding: EdgeInsets.all(80),
-                        child: Center(child: CircularProgressIndicator()),
-                      );
-                    }
-                    return builder(
-                      context,
-                      _Data(
-                        users: users.data!,
-                        hostels: hostels.data ?? const [],
-                        requests: requests.data ?? const [],
-                        fines: fines.data ?? const [],
-                        fees: fees.data ?? const [],
-                        notices: notices.data ?? const [],
-                        mess: mess.data ?? const MessConfig(),
-                      ),
-                    );
-                  },
+class _FeedState extends State<_Feed> {
+  /// Seven months back covers the revenue trend without pulling years of
+  /// history the page never draws.
+  late final List<String> _periods = recentPeriods(
+    DateTime.now(),
+    count: 7,
+  ).reversed.toList();
+
+  late final Future<Map<String, num>> _revenue = FeeService.instance
+      .revenueByPeriod(widget.collegeId, _periods);
+
+  /// Memoised per role-set. Without this every rebuild of the dashboard — a
+  /// fee arriving, a notice landing — would fire the whole batch of count()
+  /// queries again, which is precisely the cost this change exists to remove.
+  Future<UserCounts>? _counts;
+  String? _countsKey;
+
+  Future<UserCounts> _countsFor(List<AppRole>? roles) {
+    if (roles == null) return Future.value(const UserCounts());
+    final key = roles.map((r) => r.id).join(',');
+    if (_countsKey != key || _counts == null) {
+      _countsKey = key;
+      _counts = DataService.instance.countUsersByRole(widget.collegeId, roles);
+    }
+    return _counts!;
+  }
+
+  late final Future<List<FeeRecord>> _recent = FeeService.instance
+      .recentPayments(widget.collegeId);
+
+  /// Null while viewing the live session. Set only when
+  /// [Session.isViewingHistory] is true, and it is what lets the KPI strip
+  /// and the occupancy card render that session's numbers instead of today's
+  /// — see the long comment on [Session.viewingSession] for why this is a
+  /// per-viewer lens rather than a change to the workspace's real session.
+  ///
+  /// Costs one query, sized to that session's roster rather than the whole
+  /// college — the same [EnrollmentService.rosterOnce] promotion already
+  /// uses — and it is memoised per session, so flipping back and forth
+  /// between two past years does not re-pay for either.
+  Future<_HistoricalSnapshot?>? _historical;
+  String? _historicalKey;
+
+  Future<_HistoricalSnapshot?> _historicalFor(Session session) {
+    if (!session.isViewingHistory) return Future.value(null);
+    final target = session.viewingSession!;
+    final key = '${widget.collegeId}/$target';
+    if (_historicalKey != key || _historical == null) {
+      _historicalKey = key;
+      _historical = EnrollmentService.instance
+          .rosterOnce(widget.collegeId, target)
+          .then(
+            (roster) => _HistoricalSnapshot(
+              residents: roster.length,
+              heads: studentsByHostelFor(roster),
+              occupiedBeds: roster.where((e) => e.isAllotted).length,
+            ),
+          );
+    }
+    return _historical!;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final session = Session.of(context);
+    final thisPeriod = periodOf(DateTime.now());
+
+    // Roles first: they are six documents, and counting per role is what
+    // yields the total, the resident/staff split and the breakdown chart
+    // together. Then one count() per role instead of the 2,650-document
+    // roster this used to stream.
+    return StreamBuilder<List<AppRole>>(
+      stream: DataService.instance.watchRoles(widget.collegeId),
+      builder: (context, roles) => FutureBuilder<UserCounts>(
+        future: _countsFor(roles.data),
+        builder: (context, counts) => StreamBuilder<List<Hostel>>(
+          stream: HostelService.instance.watchHostels(widget.collegeId),
+          builder: (context, hostels) => StreamBuilder<List<HostelRequest>>(
+            stream: RequestService.instance.watchAll(widget.collegeId),
+            builder: (context, requests) => StreamBuilder<List<Fine>>(
+              stream: FineService.instance.watchAll(widget.collegeId),
+              // Only the current month is streamed. It is the one that has to
+              // move as clerks tick people off, and it is bounded by the number
+              // of residents. The older months are read once, as sums.
+              builder: (context, fines) => StreamBuilder<List<FeeRecord>>(
+                stream: FeeService.instance.watchPeriod(
+                  widget.collegeId,
+                  thisPeriod,
+                ),
+                builder: (context, fees) => StreamBuilder<List<Notice>>(
+                  stream: NoticeService.instance.watchAll(widget.collegeId),
+                  builder: (context, notices) => StreamBuilder<MessConfig>(
+                    stream: MessService.instance.watchConfig(widget.collegeId),
+                    builder: (context, mess) => FutureBuilder<Map<String, num>>(
+                      future: _revenue,
+                      builder: (context, revenue) =>
+                          FutureBuilder<List<FeeRecord>>(
+                            future: _recent,
+                            builder: (context, recent) =>
+                                FutureBuilder<_HistoricalSnapshot?>(
+                                  future: _historicalFor(session),
+                                  builder: (context, historical) {
+                                    // Rendered as soon as users arrive; the
+                                    // rest fill in as they land. Blocking on
+                                    // every future would leave the page blank
+                                    // for as long as the slowest one takes —
+                                    // except while viewing history, where the
+                                    // historical snapshot IS the resident
+                                    // count, so the strip must wait for it
+                                    // rather than flash today's number first.
+                                    if (!counts.hasData ||
+                                        (session.isViewingHistory &&
+                                            !historical.hasData)) {
+                                      return const Padding(
+                                        padding: EdgeInsets.all(80),
+                                        child: Center(
+                                          child: CircularProgressIndicator(),
+                                        ),
+                                      );
+                                    }
+                                    return widget.builder(
+                                      context,
+                                      _Data(
+                                        counts: counts.data!,
+                                        hostels: hostels.data ?? const [],
+                                        requests: requests.data ?? const [],
+                                        fines: fines.data ?? const [],
+                                        feesThisMonth: fees.data ?? const [],
+                                        revenueByPeriod: revenue.data,
+                                        recentFees: recent.data ?? const [],
+                                        notices: notices.data ?? const [],
+                                        mess: mess.data ?? const MessConfig(),
+                                        historical: historical.data,
+                                      ),
+                                    );
+                                  },
+                                ),
+                          ),
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -326,31 +478,34 @@ class _KpiStrip extends StatelessWidget {
   Widget build(BuildContext context) {
     final symbol = data.mess.currencySymbol;
 
-    final newResidents = data.addedThisMonth((u) => u.isAllotted);
-    final newStaff = data.addedThisMonth(
-      (u) => !u.isAllotted && !u.isSuperAdmin,
-    );
-
     final cells = <Widget>[
       _Kpi(
         icon: Icons.school_rounded,
         label: 'Residents',
-        value: '${data.residents.length}',
-        sub: '${data.users.length} people in total',
+        value: '${data.residents}',
+        // While viewing history, `graduated` is today's figure and says
+        // nothing about that past year, so it is left out rather than shown
+        // and misread as "graduated as of $session".
+        //
+        // Live: alumni are named rather than quietly dropped. Without this
+        // line a campus that has just graduated everyone reads "0 residents,
+        // 1 person in total" and looks like the roster was deleted.
+        sub: data.historical != null
+            ? 'enrolled in ${Session.of(context).viewingSession}'
+            : (data.counts.graduated == 0
+                  ? '${data.totalPeople} people in total'
+                  : '${data.totalPeople} current · '
+                        '${data.counts.graduated} graduated'),
         navId: 'users',
-        delta: newResidents > 0 ? '$newResidents this month' : null,
-        spark: data.growthOf((u) => u.isAllotted),
       ),
       _Kpi(
         icon: Icons.badge_rounded,
         label: 'Staff',
-        value: '${data.staff.length}',
+        value: '${data.staff}',
         sub: data.unassigned == 0
             ? 'All have a role'
             : '${data.unassigned} awaiting a role',
         navId: 'users',
-        delta: newStaff > 0 ? '$newStaff this month' : null,
-        spark: data.growthOf((u) => !u.isAllotted && !u.isSuperAdmin),
       ),
       _Kpi(
         icon: Icons.grid_view_rounded,
@@ -445,7 +600,6 @@ class _Kpi extends StatelessWidget {
 
   /// "12 this month" — shown with an up-arrow before [sub]. Only ever passed
   /// when there is a real figure behind it; a decorative trend arrow is a lie.
-  final String? delta;
 
   /// Seven points, oldest first. Drawn small in the corner.
   final List<num>? spark;
@@ -458,7 +612,6 @@ class _Kpi extends StatelessWidget {
     this.navId,
     this.alert = false,
     this.warn = false,
-    this.delta,
     this.spark,
   });
 
@@ -543,37 +696,20 @@ class _Kpi extends StatelessWidget {
                 const SizedBox(height: 6),
                 Row(
                   children: [
-                    if (delta != null) ...[
-                      Icon(
-                        Icons.arrow_upward_rounded,
-                        size: 11,
-                        color: AppColors.success,
-                      ),
-                      Text(
-                        delta!,
+                    Flexible(
+                      child: Text(
+                        sub,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           fontSize: 11.5,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.success,
+                          color: canGo
+                              ? AppColors.primary
+                              : AppColors.textMuted,
+                          fontWeight: canGo ? FontWeight.w600 : FontWeight.w400,
                         ),
                       ),
-                    ] else
-                      Flexible(
-                        child: Text(
-                          sub,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 11.5,
-                            color: canGo
-                                ? AppColors.primary
-                                : AppColors.textMuted,
-                            fontWeight: canGo
-                                ? FontWeight.w600
-                                : FontWeight.w400,
-                          ),
-                        ),
-                      ),
+                    ),
                   ],
                 ),
               ],
@@ -785,13 +921,11 @@ class _UsersByRole extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final nav = DashboardNav.maybeOf(context);
-    final byRole = <String, int>{};
-    for (final u in data.users) {
-      byRole[u.displayRole] = (byRole[u.displayRole] ?? 0) + 1;
-    }
-    final entries = byRole.entries.toList()
+    // One count() per role rather than a tally over every user document —
+    // same chart, three reads instead of two and a half thousand.
+    final entries = data.counts.byRoleName.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
-    final total = data.users.length;
+    final total = data.counts.total;
 
     // A short categorical ramp. Not the status colours — a role is not good
     // or bad, and reusing red here would make "danger" meaningless.
@@ -911,7 +1045,9 @@ class _UsersByRole extends StatelessWidget {
                         ? TextButton(
                             onPressed: () => nav!.goTo('users'),
                             style: TextButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(horizontal: 6),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 6,
+                              ),
                               minimumSize: const Size(0, 28),
                               tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                             ),
@@ -1001,8 +1137,11 @@ class _Occupancy extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final blocks = [...data.hostels]
-      ..sort((a, b) => b.occupancy.compareTo(a.occupancy));
+    // Sorted by this session's occupancy, not the live one — a hostel's live
+    // fill rate says nothing about who was where the year being viewed.
+    double occOf(Hostel h) =>
+        h.bedCount == 0 ? 0 : data.occupiedIn(h) / h.bedCount;
+    final blocks = [...data.hostels]..sort((a, b) => occOf(b).compareTo(occOf(a)));
     final overall = data.occupancy;
 
     // Named so the footer can point at the block that is actually dragging
@@ -1021,7 +1160,7 @@ class _Occupancy extends StatelessWidget {
                 for (final h in blocks.take(6))
                   Padding(
                     padding: const EdgeInsets.only(bottom: 13),
-                    child: _OccRow(hostel: h),
+                    child: _OccRow(hostel: h, occupied: data.occupiedIn(h)),
                   ),
                 _Foot(
                   left: Text.rich(
@@ -1049,10 +1188,10 @@ class _Occupancy extends StatelessWidget {
                       ? null
                       : Text(
                           '${worst.code.isEmpty ? worst.name : worst.code} '
-                          'lowest at ${(worst.occupancy * 100).round()}%',
+                          'lowest at ${(occOf(worst) * 100).round()}%',
                           style: TextStyle(
                             fontSize: 11.5,
-                            color: worst.occupancy < 0.7
+                            color: occOf(worst) < 0.7
                                 ? AppColors.warning
                                 : AppColors.textMuted,
                             fontWeight: FontWeight.w600,
@@ -1067,11 +1206,17 @@ class _Occupancy extends StatelessWidget {
 
 class _OccRow extends StatelessWidget {
   final Hostel hostel;
-  const _OccRow({required this.hostel});
+
+  /// Occupied-bed count for whichever session is on screen. Passed in rather
+  /// than read off [hostel] so this row renders identically for the live
+  /// occupancy and for a past session's — see [_Data.occupiedIn].
+  final int occupied;
+
+  const _OccRow({required this.hostel, required this.occupied});
 
   @override
   Widget build(BuildContext context) {
-    final pct = hostel.occupancy;
+    final pct = hostel.bedCount == 0 ? 0.0 : occupied / hostel.bedCount;
     final low = pct < 0.7;
 
     return Column(
@@ -1100,7 +1245,7 @@ class _OccRow extends StatelessWidget {
             ),
             const Spacer(),
             Text(
-              '${hostel.occupiedBeds} / ${hostel.bedCount}',
+              '$occupied / ${hostel.bedCount}',
               style: TextStyle(
                 fontSize: 11.5,
                 color: AppColors.textMuted,
@@ -1165,8 +1310,10 @@ class _RecentActivity extends StatelessWidget {
             icon: Icons.assignment_rounded,
             tone: AppColors.primary,
             title: '${r.type.label} request raised',
-            detail: [r.raisedByName, if (r.whereFrom != null) r.whereFrom!]
-                .join(' · '),
+            detail: [
+              r.raisedByName,
+              if (r.whereFrom != null) r.whereFrom!,
+            ].join(' · '),
           ),
       for (final f in data.fines.take(12))
         if (f.createdAt != null)
@@ -1186,7 +1333,7 @@ class _RecentActivity extends StatelessWidget {
             title: 'Notice posted',
             detail: n.title,
           ),
-      for (final f in data.fees.take(12))
+      for (final f in data.recentFees.take(12))
         if (f.createdAt != null)
           _Event(
             at: f.createdAt!,
@@ -1420,16 +1567,21 @@ class _RevenueCard extends StatelessWidget {
   Widget build(BuildContext context) {
     // Oldest first, so the line reads left to right like a calendar.
     final periods = recentPeriods(DateTime.now(), count: 7).reversed.toList();
-    final totals = {
-      for (final p in periods)
-        p: data.fees
-            .where((f) => f.period == p)
-            .fold<num>(0, (a, f) => a + f.amount),
-    };
+    final byPeriod = data.revenueByPeriod;
+
+    // A chart of seven zero bars is indistinguishable from a real month of no
+    // collection, so say nothing rather than something wrong.
+    if (byPeriod == null) {
+      return const _Card(
+        title: 'Fee collection',
+        subtitle: '· last 7 months',
+        child: _Empty('Collection totals are still loading.'),
+      );
+    }
+
+    final totals = {for (final p in periods) p: byPeriod[p] ?? 0};
     final values = periods.map((p) => totals[p]!).toList();
-    final maxV = values.isEmpty
-        ? 0
-        : values.reduce((a, b) => a > b ? a : b);
+    final maxV = values.isEmpty ? 0 : values.reduce((a, b) => a > b ? a : b);
 
     final thisMonth = values.last;
     final lastMonth = values.length > 1 ? values[values.length - 2] : 0;
@@ -1551,8 +1703,9 @@ class _RevenueCard extends StatelessWidget {
                               return Padding(
                                 padding: const EdgeInsets.only(top: 6),
                                 child: Text(
-                                  periodLabel(periods[i]).split(' ').first
-                                      .substring(0, 3),
+                                  periodLabel(
+                                    periods[i],
+                                  ).split(' ').first.substring(0, 3),
                                   style: TextStyle(
                                     fontSize: 10.5,
                                     fontWeight: isLast
@@ -1673,9 +1826,7 @@ class _DuesCard extends StatelessWidget {
                   colour: AppColors.primary,
                   name: 'Mess fees',
                   value: '$symbol${mess.toStringAsFixed(0)}',
-                  percent: total == 0
-                      ? ''
-                      : '${(mess / total * 100).round()}%',
+                  percent: total == 0 ? '' : '${(mess / total * 100).round()}%',
                 ),
                 _LegendRow(
                   colour: const Color(0xFF14B8A6),
@@ -1766,7 +1917,10 @@ class _RecentPayments extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final recent = [...data.fees]
+    // Already newest-first from the server, but the ordering key there is
+    // `createdAt` (when it was entered) while this table shows `paidOn` (when
+    // the money arrived). Re-sorting the dozen rows keeps the two consistent.
+    final recent = [...data.recentFees]
       ..sort((a, b) {
         final at = a.paidOn ?? a.createdAt;
         final bt = b.paidOn ?? b.createdAt;
@@ -1786,8 +1940,8 @@ class _RecentPayments extends StatelessWidget {
           ? const _Empty('No payments recorded yet.')
           : Column(
               children: [
-                const Padding(
-                  padding: EdgeInsets.only(bottom: 9),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 9),
                   child: Row(
                     children: [
                       Expanded(flex: 5, child: _Th('Student')),

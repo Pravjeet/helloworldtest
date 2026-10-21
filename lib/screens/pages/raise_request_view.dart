@@ -155,10 +155,7 @@ class _RaiseRequestViewState extends State<RaiseRequestView> {
                     Expanded(
                       child: Text(
                         _error!,
-                        style: TextStyle(
-                          color: AppColors.danger,
-                          fontSize: 13,
-                        ),
+                        style: TextStyle(color: AppColors.danger, fontSize: 13),
                       ),
                     ),
                   ],

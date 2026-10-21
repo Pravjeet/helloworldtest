@@ -8,8 +8,36 @@ import '../../services/allotment_service.dart';
 import '../../widgets/selectable_chips.dart';
 
 /// A student's own room, roommates and facilities.
-class MyRoomPage extends StatelessWidget {
+class MyRoomPage extends StatefulWidget {
   const MyRoomPage({super.key});
+
+  @override
+  State<MyRoomPage> createState() => _MyRoomPageState();
+}
+
+class _MyRoomPageState extends State<MyRoomPage> {
+  /// Memoised per room identity — the same reason `_FeedState._countsFor`
+  /// exists on the admin dashboard.
+  ///
+  /// [AllotmentService.findRoom] is a one-shot read, so building the future
+  /// inside `build()` spent a fresh Firestore read on every rebuild of the
+  /// page every resident opens. Keyed on the allotment rather than held
+  /// outright, so a student who is actually moved still refetches.
+  Future<Room?>? _room;
+  String? _roomKey;
+
+  Future<Room?> _roomFor(AppUser user) {
+    final key = '${user.collegeId}/${user.hostelId}/${user.roomId}';
+    if (_roomKey != key || _room == null) {
+      _roomKey = key;
+      _room = AllotmentService.instance.findRoom(
+        collegeId: user.collegeId,
+        hostelId: user.hostelId!,
+        roomId: user.roomId!,
+      );
+    }
+    return _room!;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -22,11 +50,7 @@ class MyRoomPage extends StatelessWidget {
     return ConstrainedBox(
       constraints: const BoxConstraints(maxWidth: 820),
       child: FutureBuilder<Room?>(
-        future: AllotmentService.instance.findRoom(
-          collegeId: user.collegeId,
-          hostelId: user.hostelId!,
-          roomId: user.roomId!,
-        ),
+        future: _roomFor(user),
         builder: (context, roomSnap) {
           if (roomSnap.connectionState == ConnectionState.waiting) {
             return const Padding(
@@ -161,7 +185,7 @@ class _RoomHeader extends StatelessWidget {
                   ),
                   const SizedBox(height: 3),
                   Text(
-                    '${user.hostelName} · Floor ${room.floor} · '
+                    '${user.hostelLabel} · Floor ${room.floor} · '
                     '${room.capacityLabel}',
                     style: TextStyle(
                       color: AppColors.textMuted,
@@ -182,9 +206,27 @@ class _RoomHeader extends StatelessWidget {
           const SizedBox(height: 16),
           Text(
             'Rent: ₹${room.rentPerBed} per bed',
-            style: const TextStyle(
-              fontSize: 13.5,
-              fontWeight: FontWeight.w600,
+            style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+          ),
+        ],
+        if (room.status == RoomStatus.maintenance) ...[
+          const SizedBox(height: 16),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppColors.warningSoft,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              (room.maintenanceNote ?? '').trim().isEmpty
+                  ? 'This room is currently under maintenance.'
+                  : 'Under maintenance: ${room.maintenanceNote}',
+              style: TextStyle(
+                color: AppColors.warning,
+                fontSize: 12.5,
+                height: 1.4,
+              ),
             ),
           ),
         ],
@@ -204,13 +246,41 @@ class _RoomHeader extends StatelessWidget {
   );
 }
 
-class _Roommates extends StatelessWidget {
+class _Roommates extends StatefulWidget {
   final AppUser user;
   final Room room;
   const _Roommates({required this.user, required this.room});
 
   @override
+  State<_Roommates> createState() => _RoommatesState();
+}
+
+class _RoommatesState extends State<_Roommates> {
+  /// Memoised for the same reason as [_MyRoomPageState._roomFor].
+  /// [AllotmentService.occupantsOf] is a `whereIn` read of the roommates'
+  /// profiles, so an un-memoised future re-read all of them on every rebuild.
+  ///
+  /// Keyed on who is actually in the room, so someone moving in or out still
+  /// refetches while an ordinary rebuild does not.
+  Future<List<AppUser>>? _mates;
+  String? _matesKey;
+
+  Future<List<AppUser>> _matesFor() {
+    final room = widget.room;
+    final key = '${room.id}/${widget.user.uid}/${room.occupantUids.join(',')}';
+    if (_matesKey != key || _mates == null) {
+      _matesKey = key;
+      _mates = AllotmentService.instance.occupantsOf(
+        room,
+        excludeUid: widget.user.uid,
+      );
+    }
+    return _mates!;
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final room = widget.room;
     return AppCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -218,10 +288,7 @@ class _Roommates extends StatelessWidget {
           const SectionHeader('Roommates'),
           const SizedBox(height: 14),
           FutureBuilder<List<AppUser>>(
-            future: AllotmentService.instance.occupantsOf(
-              room,
-              excludeUid: user.uid,
-            ),
+            future: _matesFor(),
             builder: (context, snap) {
               if (snap.connectionState == ConnectionState.waiting) {
                 return const Padding(
@@ -243,10 +310,7 @@ class _Roommates extends StatelessWidget {
                       ? 'You have this room to yourself.'
                       : 'Nobody else has been allotted here yet — '
                             '${room.free} bed(s) still free.',
-                  style: TextStyle(
-                    color: AppColors.textMuted,
-                    fontSize: 13.5,
-                  ),
+                  style: TextStyle(color: AppColors.textMuted, fontSize: 13.5),
                 );
               }
 

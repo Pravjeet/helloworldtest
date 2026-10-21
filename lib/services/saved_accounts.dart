@@ -41,9 +41,8 @@ class SavedAccount {
     'lastUsed': lastUsed.toIso8601String(),
   };
 
-  String get display => (name != null && name!.trim().isNotEmpty)
-      ? name!.trim()
-      : identifier;
+  String get display =>
+      (name != null && name!.trim().isNotEmpty) ? name!.trim() : identifier;
 
   String get initials {
     final source = display.trim();
@@ -154,9 +153,7 @@ class SavedAccounts {
     try {
       await _storage.delete(key: _pwKey(identifier));
       final rest = (await all())
-          .where(
-            (a) => a.identifier.toLowerCase() != identifier.toLowerCase(),
-          )
+          .where((a) => a.identifier.toLowerCase() != identifier.toLowerCase())
           .toList();
       await _write(rest);
     } catch (_) {}

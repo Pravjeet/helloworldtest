@@ -5,11 +5,8 @@ import '../services/auth_service.dart';
 import 'login_screen.dart';
 
 /// One-time provisioning of an institution and its Super Admin.
-///
-/// On success this pops itself: registering signs the new admin in, so the
-/// AuthGate *below* this pushed route has already swapped the login screen
-/// for the dashboard by the time the write finishes. Popping is what reveals
-/// it — see the note in [_RegisterCollegeScreenState._submit].
+/// After this succeeds, AuthGate takes over automatically (the new admin is
+/// already signed in), so there is no navigation code on success.
 class RegisterCollegeScreen extends StatefulWidget {
   const RegisterCollegeScreen({super.key});
 
@@ -50,13 +47,6 @@ class _RegisterCollegeScreenState extends State<RegisterCollegeScreen> {
         email: _email.text,
         password: _password.text,
       );
-      // AuthGate is the *root* route; this screen was pushed on top of it by
-      // the login screen's Register button. Registering signs the new admin
-      // in, which rebuilds AuthGate into the dashboard — but underneath this
-      // route, which stays on screen until it is popped. Without this the
-      // form just sits there after a successful registration, looking like
-      // nothing happened.
-      if (mounted) Navigator.of(context).pop();
     } catch (e) {
       if (mounted) {
         setState(() => _error = AuthService.describeError(e));
@@ -173,9 +163,8 @@ class _RegisterCollegeScreenState extends State<RegisterCollegeScreen> {
                       icon: Icons.lock_outline_rounded,
                       enabled: !_busy,
                       obscure: _obscure,
-                      validator: (v) => v != _password.text
-                          ? 'Passwords don\'t match'
-                          : null,
+                      validator: (v) =>
+                          v != _password.text ? 'Passwords don\'t match' : null,
                     ),
                     const SizedBox(height: 10),
                     ElevatedButton(

@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 import '../models/app_role.dart';
 import '../models/app_user.dart';
 import '../models/college_settings.dart';
+import 'permissions.dart';
 
 /// Everything the UI needs to know about "who is looking at this screen".
 ///
@@ -20,18 +21,67 @@ class Session {
   /// behaves exactly like one that has.
   final CollegeSettings settings;
 
+  /// A past session this person is *looking at*, or null for the live one.
+  ///
+  /// Deliberately not the same thing as `settings.session.current`. That value
+  /// is the workspace's real position in time — it is what Backfill and
+  /// Promotion operate on, and it is shared by everyone signed in. This one is
+  /// a private lens: it changes what you see and nothing else.
+  ///
+  /// Driving history browsing through System Settings instead would have wired
+  /// it to the most destructive button in the app — someone reading last
+  /// year's roster would have had a Promote button aimed at last year, ready
+  /// to re-run a promotion that already happened. It would also have dragged
+  /// every other signed-in admin back in time with them.
+  final String? viewingSession;
+
+  /// Switches the lens. Null returns to the live session.
+  final void Function(String?)? onViewSession;
+
+  /// [HostelCodes.signature] at the time this session was built. Carried only
+  /// so [SessionScope] can rebuild every screen when a hostel's code changes.
+  final String hostelCodes;
+
   const Session({
     required this.user,
     this.role,
     required this.collegeName,
     this.settings = const CollegeSettings(),
+    this.viewingSession,
+    this.onViewSession,
+    this.hostelCodes = '',
   });
+
+  /// The session every read-only screen should render.
+  ///
+  /// Write paths must keep using `settings.session.current` — allotting a bed
+  /// or running a promotion always belongs to the live year, whatever the
+  /// reader happens to be looking at.
+  String? get effectiveSession => viewingSession ?? settings.session.current;
+
+  /// True when looking at a session that is not the live one, which is the
+  /// cue for read-only banners and for hiding actions that would write.
+  bool get isViewingHistory =>
+      viewingSession != null && viewingSession != settings.session.current;
 
   /// SuperAdmin short-circuits every check — they own the workspace.
   bool can(String permission) =>
       user.isSuperAdmin || (role?.permissions.contains(permission) ?? false);
 
   bool canAny(List<String> permissions) => permissions.any(can);
+
+  /// Whether "Empty all rooms" can finish once started. It writes rooms
+  /// (hostels.manage), every allotted student (users.edit or
+  /// allotment.manage, after listing them with users.view) and the live
+  /// session's enrollments (academic.manage, or allotment.manage limited to
+  /// room fields). Checked up front, because a role missing the last of
+  /// those used to empty every room and student and then be refused the
+  /// enrollments — half-done, every time.
+  bool get canEmptyAllRooms =>
+      can(Perm.hostelsManage) &&
+      can(Perm.usersView) &&
+      (can(Perm.usersEdit) || can(Perm.allotmentManage)) &&
+      (can(Perm.academicManage) || can(Perm.allotmentManage));
 
   /// A user with no role assigned yet gets a friendly holding screen instead
   /// of an empty dashboard.
@@ -46,8 +96,7 @@ class Session {
   /// than a descendant, and SessionScope sits below that Navigator. Read the
   /// session in the page that opens the dialog and pass what you need in.
   static Session of(BuildContext context) {
-    final scope = context
-        .dependOnInheritedWidgetOfExactType<SessionScope>();
+    final scope = context.dependOnInheritedWidgetOfExactType<SessionScope>();
     if (scope == null) {
       throw FlutterError(
         'Session.of() found no SessionScope above this widget.\n'
@@ -64,11 +113,7 @@ class Session {
 class SessionScope extends InheritedWidget {
   final Session session;
 
-  const SessionScope({
-    super.key,
-    required this.session,
-    required super.child,
-  });
+  const SessionScope({super.key, required this.session, required super.child});
 
   @override
   bool updateShouldNotify(SessionScope oldWidget) =>
@@ -76,7 +121,12 @@ class SessionScope extends InheritedWidget {
       oldWidget.session.role?.permissions != session.role?.permissions ||
       oldWidget.session.user.name != session.user.name ||
       oldWidget.session.collegeName != session.collegeName ||
-      oldWidget.session.settings.updatedAt != session.settings.updatedAt;
+      oldWidget.session.settings.updatedAt != session.settings.updatedAt ||
+      // Switching the lens has to rebuild everything that reads it, which is
+      // most of the app — the whole point is that the dashboard, hostels and
+      // rooms all move together.
+      oldWidget.session.viewingSession != session.viewingSession ||
+      oldWidget.session.hostelCodes != session.hostelCodes;
 }
 
 /// Convenience for reading permissions inline in build methods.

@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 
+import '../../core/permissions.dart';
 import '../../core/session.dart';
 import '../../core/theme.dart';
 import '../../models/fine.dart';
 import '../../services/auth_service.dart';
 import '../../services/fine_service.dart';
+import 'fine_detail_dialog.dart';
 
 /// Pieces shared by the fines register, the overview dashboard and the fines
 /// card on a student's detail screen. They live here rather than in any one of
@@ -20,8 +22,18 @@ String compactAmount(num v) {
 
 String shortDate(DateTime d) {
   const months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
   ];
   return '${d.day} ${months[d.month - 1]}';
 }
@@ -33,7 +45,7 @@ String shortDate(DateTime d) {
 };
 
 /// One fine, as shown in the register, a student's own list, and the fines
-/// card on a student's detail screen.
+/// card on a student's detail screen. Tapping it opens [FineDetailDialog].
 class FineRow extends StatelessWidget {
   final Fine fine;
   final bool showWho;
@@ -109,97 +121,119 @@ class FineRow extends StatelessWidget {
     }
   }
 
+  /// The whole record — the student's face, the scan of the order. Read
+  /// permissions here, while this row is still under SessionScope; the
+  /// dialog itself sits above it.
+  void _openDetail(BuildContext context) {
+    final session = Session.of(context);
+    showDialog<void>(
+      context: context,
+      builder: (_) => FineDetailDialog(
+        fine: fine,
+        collegeId: collegeId,
+        canViewOrders: session.can(Perm.officeOrdersView),
+        canSeeProfiles: session.can(Perm.usersView),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = fineStatusColours(fine.status);
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 13),
-      child: Row(
-        children: [
-          Container(
-            height: 40,
-            width: 40,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              color: c.bg,
-              borderRadius: BorderRadius.circular(11),
+    return InkWell(
+      onTap: () => _openDetail(context),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 13),
+        child: Row(
+          children: [
+            Container(
+              height: 40,
+              width: 40,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: c.bg,
+                borderRadius: BorderRadius.circular(11),
+              ),
+              child: Icon(Icons.gavel_rounded, size: 18, color: c.fg),
             ),
-            child: Icon(Icons.gavel_rounded, size: 18, color: c.fg),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            flex: 4,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  showWho ? fine.studentName : fine.category,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w600,
-                    fontSize: 14.5,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  [
-                    if (showWho) fine.category,
-                    if (fine.studentRegNo != null) fine.studentRegNo!,
-                    if (fine.whereFrom != null) fine.whereFrom!,
-                    if (fine.sem != null) 'Sem ${fine.sem}',
-                    if (fine.trade != null) fine.trade!,
-                    if (fine.officeOrderNo != null) fine.officeOrderNo!,
-                    if (fine.createdAt != null) shortDate(fine.createdAt!),
-                  ].join(' · '),
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: AppColors.textMuted,
-                    fontSize: 12.5,
-                  ),
-                ),
-                if (fine.reason.isNotEmpty) ...[
-                  const SizedBox(height: 5),
+            const SizedBox(width: 14),
+            Expanded(
+              flex: 4,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
                   Text(
-                    fine.reason,
-                    style: const TextStyle(fontSize: 13, height: 1.4),
+                    showWho ? fine.studentName : fine.category,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14.5,
+                    ),
                   ),
-                ],
-              ],
-            ),
-          ),
-          const SizedBox(width: 12),
-          Text(
-            '₹${fine.amount}',
-            style: const TextStyle(
-              fontSize: 15.5,
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-          const SizedBox(width: 12),
-          StatusPill(fine.status.label.toUpperCase(), c.fg, c.bg),
-          if (canManage)
-            PopupMenuButton<String>(
-              itemBuilder: (context) => [
-                if (fine.status.isOutstanding) ...[
-                  const PopupMenuItem(value: 'paid', child: Text('Mark paid')),
-                  const PopupMenuItem(value: 'waived', child: Text('Waive')),
-                ],
-                PopupMenuItem(
-                  value: 'delete',
-                  child: Text(
-                    'Remove',
-                    style: TextStyle(color: AppColors.danger),
+                  const SizedBox(height: 2),
+                  Text(
+                    [
+                      if (showWho) fine.category,
+                      if (fine.studentRegNo != null) fine.studentRegNo!,
+                      if (fine.whereFrom != null) fine.whereFrom!,
+                      if (fine.sem != null) 'Sem ${fine.sem}',
+                      if (fine.trade != null) fine.trade!,
+                      if (fine.officeOrderNo != null) fine.officeOrderNo!,
+                      if (fine.createdAt != null) shortDate(fine.createdAt!),
+                    ].join(' · '),
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: AppColors.textMuted,
+                      fontSize: 12.5,
+                    ),
                   ),
-                ),
-              ],
-              onSelected: (v) => _act(context, v),
-              child: const Padding(
-                padding: EdgeInsets.only(left: 6),
-                child: Icon(Icons.more_vert_rounded, size: 20),
+                  if (fine.reason.isNotEmpty) ...[
+                    const SizedBox(height: 5),
+                    Text(
+                      fine.reason,
+                      style: const TextStyle(fontSize: 13, height: 1.4),
+                    ),
+                  ],
+                ],
               ),
             ),
-        ],
+            const SizedBox(width: 12),
+            Text(
+              '₹${fine.amount}',
+              style: const TextStyle(
+                fontSize: 15.5,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(width: 12),
+            StatusPill(fine.status.label.toUpperCase(), c.fg, c.bg),
+            if (canManage)
+              PopupMenuButton<String>(
+                itemBuilder: (context) => [
+                  if (fine.status.isOutstanding) ...[
+                    const PopupMenuItem(
+                      value: 'paid',
+                      child: Text('Mark paid'),
+                    ),
+                    const PopupMenuItem(value: 'waived', child: Text('Waive')),
+                  ],
+                  PopupMenuItem(
+                    value: 'delete',
+                    child: Text(
+                      'Remove',
+                      style: TextStyle(color: AppColors.danger),
+                    ),
+                  ),
+                ],
+                onSelected: (v) => _act(context, v),
+                child: const Padding(
+                  padding: EdgeInsets.only(left: 6),
+                  child: Icon(Icons.more_vert_rounded, size: 20),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

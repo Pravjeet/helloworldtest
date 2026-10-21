@@ -62,15 +62,74 @@ class FeeService {
             ),
       );
 
-  /// One student's own history, newest month first.
+  /// Total collected in each of [periods], without downloading the records.
+  ///
+  /// The dashboard's revenue trend used to come from `watchSince`, which
+  /// streamed every fee record in a seven-month window. Empty during setup,
+  /// but a college of 2,500 students paying monthly puts ~15,000 documents
+  /// behind that query — six times the roster, and 30% of the free tier's
+  /// 50,000 daily reads spent on one screen.
+  ///
+  /// A `sum()` aggregation is billed per 1,000 index entries scanned rather
+  /// than per document, so the same seven months costs on the order of twenty
+  /// reads. One query per period because each needs its own `where` — they
+  /// can't be folded into a single aggregate, which only ever applies to one
+  /// query's result set.
+  ///
+  /// One-shot rather than a stream: aggregations have no snapshot listener.
+  /// The trend is a historical figure, so it is read when the dashboard opens
+  /// and not again. Anything that has to move as it happens — this month's
+  /// collection, who is still unpaid — stays on [watchPeriod].
+  Future<Map<String, num>> revenueByPeriod(
+    String collegeId,
+    List<String> periods,
+  ) async {
+    final totals = <String, num>{};
+    await Future.wait(
+      periods.map((p) async {
+        final snap = await _col(
+          collegeId,
+        ).where('period', isEqualTo: p).aggregate(sum('amount')).get();
+        totals[p] = snap.getSum('amount') ?? 0;
+      }),
+    );
+    return totals;
+  }
+
+  /// The most recently recorded payments, newest first.
+  ///
+  /// For the dashboard's activity feed and "Recent fee payments" card, which
+  /// between them show at most a dozen rows. Ordered and limited server-side
+  /// so it costs [limit] reads rather than the whole collection — the list
+  /// previously came from sorting every record the dashboard had streamed.
+  Future<List<FeeRecord>> recentPayments(
+    String collegeId, {
+    int limit = 12,
+  }) async {
+    final snap = await _col(
+      collegeId,
+    ).orderBy('createdAt', descending: true).limit(limit).get();
+    return snap.docs.map((d) => FeeRecord.fromMap(d.id, d.data())).toList();
+  }
+
+  final CachedStreamPool<List<FeeRecord>> _minePool = CachedStreamPool();
+
+  /// One student's own history, newest month first. Pooled per student for the
+  /// same reason as [FineService.watchMine] — it lives in `build()` on a page
+  /// every resident opens.
   Stream<List<FeeRecord>> watchMine(String collegeId, String uid) =>
-      _col(collegeId).where('studentUid', isEqualTo: uid).snapshots().map((s) {
-        final list = s.docs
-            .map((d) => FeeRecord.fromMap(d.id, d.data()))
-            .toList();
-        // Periods are `YYYY-MM`, so a plain string sort is chronological.
-        list.sort((a, b) => b.period.compareTo(a.period));
-        return list;
+      _minePool.stream('$collegeId/$uid', () {
+        return _col(collegeId)
+            .where('studentUid', isEqualTo: uid)
+            .snapshots()
+            .map((s) {
+              final list = s.docs
+                  .map((d) => FeeRecord.fromMap(d.id, d.data()))
+                  .toList();
+              // Periods are `YYYY-MM`, so a plain string sort is chronological.
+              list.sort((a, b) => b.period.compareTo(a.period));
+              return list;
+            });
       });
 
   // ------------------------------ writes -----------------------------
@@ -147,7 +206,8 @@ class FeeService {
         collegeId: collegeId,
         actor: actor,
         action: 'fee.markUnpaid',
-        summary: 'Un-marked ${before['studentName']} for '
+        summary:
+            'Un-marked ${before['studentName']} for '
             '${periodLabel(period)}',
         targetLabel: '${before['studentName']}',
         path: 'colleges/$collegeId/feeRecords/$id',
@@ -226,6 +286,50 @@ class FeeService {
       if (snap.docs.length < 400) break;
     }
     return removed;
+  }
+
+  /// Removes fee records whose student is no longer in [liveUids].
+  ///
+  /// Same shape and reasoning as `FineService.deleteOrphaned` — Firestore has
+  /// no "not-in a set of N" operator, so the filter happens client-side.
+  Future<int> deleteOrphaned(String collegeId, Set<String> liveUids) async {
+    final snap = await _col(collegeId).get();
+    final orphaned = snap.docs.where((d) {
+      final uid = d.data()['studentUid'] as String?;
+      return uid == null || uid.isEmpty || !liveUids.contains(uid);
+    }).toList();
+    if (orphaned.isEmpty) return 0;
+
+    for (var i = 0; i < orphaned.length; i += 400) {
+      final end = (i + 400).clamp(0, orphaned.length);
+      final batch = _db.batch();
+      for (final d in orphaned.sublist(i, end)) {
+        batch.delete(d.reference);
+      }
+      await batch.commit();
+    }
+    return orphaned.length;
+  }
+
+  /// Every fee record belonging to one student, across all periods.
+  ///
+  /// Called when a single user is deleted, so their payment history goes with
+  /// them instead of lingering as a row pointing at a missing uid.
+  Future<int> deleteForStudent(String collegeId, String uid) async {
+    final snap = await _col(
+      collegeId,
+    ).where('studentUid', isEqualTo: uid).get();
+    if (snap.docs.isEmpty) return 0;
+
+    for (var i = 0; i < snap.docs.length; i += 400) {
+      final end = (i + 400).clamp(0, snap.docs.length);
+      final batch = _db.batch();
+      for (final d in snap.docs.sublist(i, end)) {
+        batch.delete(d.reference);
+      }
+      await batch.commit();
+    }
+    return snap.docs.length;
   }
 
   /// Joins the student list against a month's records.

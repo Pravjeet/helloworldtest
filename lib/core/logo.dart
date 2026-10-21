@@ -226,12 +226,7 @@ class _HomiPainter extends CustomPainter {
     const leftLit = [true, false, true, true, false, true];
     const rightLit = [false, true, true, false];
 
-    void grid(
-      RRect box,
-      int cols,
-      int rows,
-      List<bool> lit,
-    ) {
+    void grid(RRect box, int cols, int rows, List<bool> lit) {
       final inset = w * 0.055;
       final left = box.left + inset;
       final right = box.right - inset;

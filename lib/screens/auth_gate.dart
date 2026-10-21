@@ -1,14 +1,20 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../core/hostel_codes.dart';
 import '../core/identity.dart';
+import '../core/permissions.dart';
 import '../core/session.dart';
 import '../core/theme.dart';
 import '../models/app_role.dart';
 import '../models/app_user.dart';
 import '../models/college_settings.dart';
+import '../models/hostel.dart';
 import '../services/auth_service.dart';
 import '../services/data_service.dart';
+import '../services/default_hostels.dart';
+import '../services/enrollment_service.dart';
+import '../services/hostel_service.dart';
 import '../services/settings_service.dart';
 import '../services/theme_cache.dart';
 import 'dashboard_shell.dart';
@@ -41,9 +47,25 @@ class AuthGate extends StatelessWidget {
 }
 
 /// Loads profile → role → college name, then hands a [Session] to the shell.
-class _SessionLoader extends StatelessWidget {
+class _SessionLoader extends StatefulWidget {
   final User authUser;
   const _SessionLoader({required this.authUser});
+
+  @override
+  State<_SessionLoader> createState() => _SessionLoaderState();
+}
+
+class _SessionLoaderState extends State<_SessionLoader> {
+  User get authUser => widget.authUser;
+
+  /// The past session being viewed, or null for the live one.
+  ///
+  /// Held here rather than in Firestore on purpose: it is one person's lens,
+  /// not workspace configuration, so it must not follow them onto another
+  /// machine or drag other signed-in admins along with it. It resets to the
+  /// live session on every sign-in, which is the right default — you should
+  /// have to ask to be looking at the past.
+  String? _viewing;
 
   /// Catches up the Firestore profile after a sign-in email change.
   ///
@@ -83,6 +105,9 @@ class _SessionLoader extends StatelessWidget {
           );
         }
         _syncEmail(profile);
+        if (profile.isActive && profile.isSuperAdmin) {
+          DefaultHostels.instance.seedIfNeeded(profile.collegeId);
+        }
         if (!profile.isActive) {
           return const _Failure(
             message:
@@ -131,32 +156,69 @@ class _SessionLoader extends StatelessWidget {
                       MediaQuery.platformBrightnessOf(context),
                     );
 
-                    return SessionScope(
-                      session: Session(
-                        user: profile,
-                        role: role,
-                        collegeName: nameSnap.data ?? 'Institution',
-                        settings: settings,
-                      ),
-                      // Applied here rather than at MaterialApp, because the
-                      // palette lives in the workspace's settings and there is
-                      // no workspace until someone has signed in.
-                      //
-                      // PaletteScope must wrap the Theme: it rewrites the
-                      // AppColors tokens that buildAppTheme then reads.
-                      child: PaletteScope(
-                        accent: settings.theming.seed,
-                        dark: dark,
-                        child: Builder(
-                          builder: (context) => Theme(
-                            data: buildAppTheme(
-                              seed: settings.theming.seed,
-                              dark: dark,
-                            ),
-                            child: const DashboardShell(),
+                    // Hostel codes for every screen (see HostelCodes). Only
+                    // for accounts the rules let read hostels — a student's
+                    // read would be refused, and they fall back to names.
+                    final canSeeHostels =
+                        profile.isSuperAdmin ||
+                        (role?.permissions.contains(Perm.hostelsView) ?? false);
+
+                    return StreamBuilder<List<Hostel>>(
+                      stream: canSeeHostels
+                          ? HostelService.instance.watchHostels(
+                              profile.collegeId,
+                            )
+                          : const Stream<List<Hostel>>.empty(),
+                      builder: (context, hostelSnap) {
+                        // Waited for once, so no screen draws a hostel's full
+                        // name and then flips to its code a moment later.
+                        if (canSeeHostels &&
+                            !hostelSnap.hasData &&
+                            !hostelSnap.hasError) {
+                          return const _Loading('Loading your workspace…');
+                        }
+                        if (hostelSnap.hasData) {
+                          HostelCodes.update(hostelSnap.data!);
+                        }
+
+                        return SessionScope(
+                          session: Session(
+                            user: profile,
+                            role: role,
+                            collegeName: nameSnap.data ?? 'Institution',
+                            settings: settings,
+                            // Ignored once it matches the live session again, so
+                            // returning to "now" clears the lens rather than
+                            // pinning it to a value that will go stale in July.
+                            viewingSession: _viewing == settings.session.current
+                                ? null
+                                : _viewing,
+                            onViewSession: (s) => setState(() => _viewing = s),
+                            hostelCodes: HostelCodes.signature,
                           ),
-                        ),
-                      ),
+                          // Applied here rather than at MaterialApp, because the
+                          // palette lives in the workspace's settings and there is
+                          // no workspace until someone has signed in.
+                          //
+                          // PaletteScope must wrap the Theme: it rewrites the
+                          // AppColors tokens that buildAppTheme then reads.
+                          child: PaletteScope(
+                            accent: settings.theming.seed,
+                            dark: dark,
+                            child: Builder(
+                              builder: (context) => Theme(
+                                data: buildAppTheme(
+                                  seed: settings.theming.seed,
+                                  dark: dark,
+                                ),
+                                child: const _HistoryChooserGate(
+                                  child: DashboardShell(),
+                                ),
+                              ),
+                            ),
+                          ),
+                        );
+                      },
                     );
                   },
                 );
@@ -284,5 +346,138 @@ class _Centered extends StatelessWidget {
         ),
       ),
     ),
+  );
+}
+
+/// Offers a batch/session chooser once per sign-in, for whoever holds
+/// `academic.view` or `academic.manage` and has more than one session's
+/// worth of history to choose between.
+///
+/// This is the entry point asked for at login — the header pill (see
+/// [dashboard_shell.dart]) stays available afterwards for switching again.
+/// Both call the same [Session.onViewSession]; this is only where the choice
+/// is first offered.
+class _HistoryChooserGate extends StatefulWidget {
+  final Widget child;
+  const _HistoryChooserGate({required this.child});
+
+  @override
+  State<_HistoryChooserGate> createState() => _HistoryChooserGateState();
+}
+
+class _HistoryChooserGateState extends State<_HistoryChooserGate> {
+  /// A field, not a static — this widget is recreated (with a fresh `false`)
+  /// every time [_SessionLoader] is, which is exactly on sign-in. Flutter
+  /// preserves State across the ordinary rebuilds this screen goes through
+  /// as its four StreamBuilders resolve, so this stays `true` across those
+  /// and the dialog is offered exactly once per session, not once per frame.
+  bool _offered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_offered) {
+      _offered = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) => _maybeOffer());
+    }
+    return widget.child;
+  }
+
+  Future<void> _maybeOffer() async {
+    if (!mounted) return;
+    // Read here, before showDialog — a dialog is pushed onto the root
+    // Navigator and cannot see SessionScope; see the note on [Session.of].
+    final session = Session.of(context);
+    final onViewSession = session.onViewSession;
+    if (!session.canAny([Perm.academicView, Perm.academicManage])) return;
+    final current = session.settings.session.current;
+    if (current == null || onViewSession == null) return;
+
+    final sessions = await EnrollmentService.instance.sessionsWithData(
+      session.user.collegeId,
+      current,
+    );
+    // A chooser offering one option is not a choice — nothing to ask.
+    if (!mounted || sessions.length < 2) return;
+
+    final chosen = await showDialog<String>(
+      context: context,
+      builder: (_) =>
+          _SessionChooserDialog(sessions: sessions, current: current),
+    );
+    if (chosen != null && chosen != current) onViewSession(chosen);
+  }
+}
+
+class _SessionChooserDialog extends StatelessWidget {
+  final List<String> sessions;
+  final String current;
+
+  const _SessionChooserDialog({required this.sessions, required this.current});
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Which session?'),
+    content: SizedBox(
+      width: 380,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'The Dashboard and Hostels & Rooms can show any past session as '
+            'it stood that year. Pick one, or stay on the current session — '
+            'you can always switch later from the pill next to the bell.',
+            style: TextStyle(
+              fontSize: 12.5,
+              height: 1.45,
+              color: AppColors.textMuted,
+            ),
+          ),
+          const SizedBox(height: 16),
+          // A plain tappable row rather than RadioListTile: this dialog
+          // commits on the first tap, so there is no group selection state
+          // to manage — only "current" needs to read as pre-highlighted.
+          for (final s in sessions)
+            InkWell(
+              onTap: () => Navigator.pop(context, s),
+              borderRadius: BorderRadius.circular(8),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 4),
+                child: Row(
+                  children: [
+                    Icon(
+                      s == current
+                          ? Icons.radio_button_checked_rounded
+                          : Icons.radio_button_unchecked_rounded,
+                      size: 18,
+                      color: s == current
+                          ? AppColors.primary
+                          : AppColors.textMuted,
+                    ),
+                    const SizedBox(width: 12),
+                    Text(s, style: const TextStyle(fontSize: 13.5)),
+                    if (s == current) ...[
+                      const SizedBox(width: 8),
+                      Text(
+                        '· current',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: AppColors.textMuted,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context, current),
+        child: const Text('Continue with current'),
+      ),
+    ],
   );
 }

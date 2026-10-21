@@ -12,11 +12,17 @@ import '../../models/fine.dart';
 import '../../services/auth_service.dart';
 import '../../services/data_service.dart';
 import '../../services/fine_service.dart';
+import '../../utils/jpeg_shrink.dart';
 
-/// Largest order photo accepted, in bytes. Base64 adds ~33% on top of this,
-/// and a Firestore document tops out around 1 MB, so this leaves headroom
-/// for the fine and order fields alongside it.
-const int _maxOrderImageBytes = 700 * 1024;
+/// Largest order photo stored, in bytes. Anything bigger is shrunk to fit on
+/// the device before upload — every order's scan is read with the register,
+/// so this is what keeps the Office Orders page and the Spark plan's 1 GiB
+/// storage manageable as orders pile up.
+const int _maxOrderImageBytes = 70 * 1024;
+
+/// Longest side tried first when shrinking. An A4 order at this size is still
+/// readable once zoomed; the shrink steps down from here only if it must.
+const int _maxOrderImageEdge = 1600;
 
 const _monthNames = [
   'Jan',
@@ -157,22 +163,36 @@ class _ImposeFineViewState extends State<ImposeFineView> {
     final file = result?.files.single;
     if (file == null || file.bytes == null) return;
 
-    if (file.bytes!.lengthInBytes > _maxOrderImageBytes) {
-      setState(() {
-        _error =
-            'That photo is too large '
-            '(${(file.bytes!.lengthInBytes / 1024).round()} KB). Please '
-            'keep it under ${_maxOrderImageBytes ~/ 1024} KB — a phone camera '
-            'shot usually compresses well below that.';
-      });
-      return;
+    var bytes = file.bytes!;
+    var mime = _mimeByExt[file.extension?.toLowerCase() ?? ''] ?? 'image/jpeg';
+
+    if (bytes.lengthInBytes > _maxOrderImageBytes) {
+      setState(() => _busy = true);
+      try {
+        bytes = await shrinkToJpeg(
+          bytes,
+          maxEdge: _maxOrderImageEdge,
+          maxBytes: _maxOrderImageBytes,
+          whitenPaper: true,
+        );
+        mime = 'image/jpeg';
+      } on PhotoRejected catch (e) {
+        if (mounted) {
+          setState(() {
+            _busy = false;
+            _error = e.message;
+          });
+        }
+        return;
+      }
+      if (!mounted) return;
     }
 
-    final ext = file.extension?.toLowerCase() ?? '';
     setState(() {
+      _busy = false;
       _error = null;
-      _orderImageBytes = file.bytes;
-      _orderImageMimeType = _mimeByExt[ext] ?? 'image/jpeg';
+      _orderImageBytes = bytes;
+      _orderImageMimeType = mime;
       _orderImageName = file.name;
     });
   }
@@ -705,7 +725,8 @@ class _ImposeFineViewState extends State<ImposeFineView> {
                       onPressed: _busy ? null : _pickOrderImage,
                       icon: const Icon(Icons.add_photo_alternate_outlined),
                       label: const Text(
-                        'Choose a photo (JPG/PNG, under 700 KB)',
+                        'Choose a photo (JPG/PNG — shrunk to under '
+                        '${_maxOrderImageBytes ~/ 1024} KB automatically)',
                       ),
                     ),
                   const SizedBox(height: 18),
@@ -847,7 +868,7 @@ class _StudentResults extends StatelessWidget {
     final q = query.trim().toLowerCase();
     if (q.length < 2) {
       return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 18),
+        padding: EdgeInsets.symmetric(vertical: 18),
         child: Text(
           'Type at least two characters to find a student.',
           style: TextStyle(color: AppColors.textMuted, fontSize: 13),
@@ -882,7 +903,7 @@ class _StudentResults extends StatelessWidget {
 
         if (matches.isEmpty) {
           return Padding(
-            padding: const EdgeInsets.symmetric(vertical: 18),
+            padding: EdgeInsets.symmetric(vertical: 18),
             child: Text(
               'Nobody matches that.',
               style: TextStyle(color: AppColors.textMuted, fontSize: 13),

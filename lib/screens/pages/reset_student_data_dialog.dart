@@ -188,10 +188,10 @@ class _Confirm extends StatelessWidget {
 
         // Two columns, because the question people actually have is not "what
         // does this delete" but "will it take my hostels with it".
-        const IntrinsicHeight(
+        IntrinsicHeight(
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+            children: const [
               Expanded(
                 child: _ScopeList(
                   title: 'Deleted',
@@ -199,9 +199,11 @@ class _Confirm extends StatelessWidget {
                   danger: true,
                   items: [
                     'Every student and staff profile',
+                    'Their sign-in accounts (Firebase Auth)',
                     'All mess fee records',
                     'All fines, paid and unpaid',
                     'All requests and complaints',
+                    'All academic records (every session\'s roster)',
                     'Room occupancy (who is in which bed)',
                   ],
                 ),
@@ -237,12 +239,12 @@ class _Confirm extends StatelessWidget {
             borderRadius: BorderRadius.circular(10),
           ),
           child: Text(
-            'Sign-in accounts are NOT removed. The app can only delete the '
-            'login it is currently signed in as — everyone else\'s survives, '
-            'and re-importing the same registration numbers will fail with '
-            '"email already in use".\n\n'
-            'To clear those too, run:\n'
-            'tools/delete-students.js --all-students --i-mean-it --commit',
+            'Sign-in accounts are removed by signing in as each student with '
+            'their registration-number password — a few minutes for a few '
+            'hundred students. Anyone who changed their password (and staff '
+            'with a real one) can\'t be removed that way: they are listed at '
+            'the end, and this clears them:\n'
+            'tools/delete-students.js --orphans --commit',
             style: TextStyle(
               color: AppColors.warning,
               fontSize: 12.5,
@@ -413,33 +415,77 @@ class _Result extends StatelessWidget {
           spacing: 30,
           runSpacing: 14,
           children: [
+            _Tally(
+              'Sign-in accounts',
+              outcome.accountsDeleted,
+              AppColors.success,
+            ),
             _Tally('Profiles', outcome.profilesDeleted, AppColors.success),
             _Tally('Fee records', outcome.feeRecordsDeleted, AppColors.success),
             _Tally('Fines', outcome.finesDeleted, AppColors.success),
             _Tally('Requests', outcome.requestsDeleted, AppColors.success),
+            _Tally(
+              'Academic records',
+              outcome.enrollmentsDeleted,
+              AppColors.success,
+            ),
             _Tally('Beds freed', outcome.bedsFreed, AppColors.info),
             _Tally('Admins kept', outcome.adminsKept, AppColors.info),
           ],
         ),
-        const SizedBox(height: 18),
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(13),
-          decoration: BoxDecoration(
-            color: AppColors.warningSoft,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Text(
-            'Sign-in accounts still exist. Before importing the same '
-            'registration numbers again, run:\n'
-            'tools/delete-students.js --all-students --i-mean-it --commit',
-            style: TextStyle(
-              fontSize: 12.5,
-              color: AppColors.warning,
-              height: 1.5,
+        // Only when some survived — named, because "email already in use" on
+        // the next import is the symptom, and it needs connecting to a cause.
+        if (outcome.accountsKept.isNotEmpty) ...[
+          const SizedBox(height: 18),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(13),
+            decoration: BoxDecoration(
+              color: AppColors.warningSoft,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${outcome.accountsKept.length} sign-in account'
+                  '${outcome.accountsKept.length == 1 ? '' : 's'} could not '
+                  'be removed from the app. Re-importing them would fail with '
+                  '"email already in use" — clear them with:\n'
+                  'tools/delete-students.js --orphans --commit',
+                  style: TextStyle(
+                    fontSize: 12.5,
+                    color: AppColors.warning,
+                    height: 1.5,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 150),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        for (final k in outcome.accountsKept)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 3),
+                            child: Text(
+                              k.split(':').first,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: AppColors.warning,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
-        ),
+        ],
         if (outcome.failures.isNotEmpty) ...[
           const SizedBox(height: 16),
           Text(

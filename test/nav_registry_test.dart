@@ -103,7 +103,13 @@ void main() {
       final ids = _ids(_session(kRoleTemplates['Student']!));
       expect(
         ids,
-        containsAll(<String>['my-room', 'mess', 'notices', 'requests', 'fines']),
+        containsAll(<String>[
+          'my-room',
+          'mess',
+          'notices',
+          'requests',
+          'fines',
+        ]),
       );
       expect(ids, isNot(contains('users')));
       expect(ids, isNot(contains('roles')));
@@ -118,6 +124,42 @@ void main() {
         containsAll(<String>['users', 'allotment', 'fines', 'office-orders']),
       );
       expect(ids, isNot(contains('settings')));
+    });
+
+    test('academic.view alone opens Academic Records', () {
+      final ids = _ids(_session([Perm.academicView]));
+      expect(ids, contains('academic'));
+    });
+
+    test(
+      'academic.manage alone also opens it — either permission is enough',
+      () {
+        final ids = _ids(_session([Perm.academicManage]));
+        expect(ids, contains('academic'));
+      },
+    );
+
+    test('Chief Warden sees Academic Records; Warden and Student do not', () {
+      // Only the Chief Warden template grants either academic permission —
+      // this is the check that would catch it silently spreading to (or
+      // vanishing from) a role template.
+      expect(
+        _ids(_session(kRoleTemplates['Chief Warden']!)),
+        contains('academic'),
+      );
+      expect(
+        _ids(_session(kRoleTemplates['Warden']!)),
+        isNot(contains('academic')),
+      );
+      expect(
+        _ids(_session(kRoleTemplates['Student']!)),
+        isNot(contains('academic')),
+      );
+    });
+
+    test('no academic permission means no Academic Records entry', () {
+      final ids = _ids(_session(['fines.manage', 'users.view']));
+      expect(ids, isNot(contains('academic')));
     });
 
     test('renaming a role changes nothing — only its permissions matter', () {
@@ -265,10 +307,7 @@ void main() {
     });
 
     test('is false for Student — residents don\'t manage hostels', () {
-      expect(
-        Perm.managesHostels(kRoleTemplates['Student']!.toSet()),
-        isFalse,
-      );
+      expect(Perm.managesHostels(kRoleTemplates['Student']!.toSet()), isFalse);
     });
 
     test('is a permission check, not a name check', () {

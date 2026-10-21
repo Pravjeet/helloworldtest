@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 
+import '../../core/hostel_codes.dart';
 import '../../core/permissions.dart';
 import '../../core/session.dart';
 import '../../core/theme.dart';
 import '../../models/app_user.dart';
 import '../../models/fee.dart';
+import '../../models/hostel.dart';
 import '../../models/mess.dart';
 import '../../services/auth_service.dart';
 import '../../services/data_service.dart';
@@ -32,6 +34,12 @@ class _FeesPageState extends State<FeesPage> {
   String _query = '';
   String? _hostel;
   String? _status;
+
+  /// Paginated like Users / Room Allotment / Student Overview: a fully
+  /// allotted campus is thousands of rows, and building them all is what
+  /// makes opening this page stutter.
+  static const _pageSize = 50;
+  int _page = 0;
 
   @override
   Widget build(BuildContext context) {
@@ -74,7 +82,10 @@ class _FeesPageState extends State<FeesPage> {
                     trailing: canViewAll
                         ? _PeriodPicker(
                             value: _period,
-                            onChanged: (v) => setState(() => _period = v),
+                            onChanged: (v) => setState(() {
+                              _period = v;
+                              _page = 0;
+                            }),
                           )
                         : null,
                   ),
@@ -84,10 +95,7 @@ class _FeesPageState extends State<FeesPage> {
                         ? 'Who has paid this month. The app records status '
                               'only — it does not take payments.'
                         : 'Your monthly mess fee status.',
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: AppColors.textMuted,
-                    ),
+                    style: TextStyle(fontSize: 13, color: AppColors.textMuted),
                   ),
                   if (!config.isConfigured) ...[
                     const SizedBox(height: 14),
@@ -123,9 +131,23 @@ class _FeesPageState extends State<FeesPage> {
                 query: _query,
                 hostel: _hostel,
                 status: _status,
-                onQuery: (v) => setState(() => _query = v),
-                onHostel: (v) => setState(() => _hostel = v),
-                onStatus: (v) => setState(() => _status = v),
+                page: _page,
+                pageSize: _pageSize,
+                // Every filter resets to page 1 — narrowing to three matches
+                // while still on page 12 would otherwise show an empty list.
+                onQuery: (v) => setState(() {
+                  _query = v;
+                  _page = 0;
+                }),
+                onHostel: (v) => setState(() {
+                  _hostel = v;
+                  _page = 0;
+                }),
+                onStatus: (v) => setState(() {
+                  _status = v;
+                  _page = 0;
+                }),
+                onPage: (v) => setState(() => _page = v),
               )
             else
               _MyFees(
@@ -163,9 +185,7 @@ class _PeriodPicker extends StatelessWidget {
         isExpanded: true,
         decoration: const InputDecoration(labelText: 'Month', isDense: true),
         items: options
-            .map(
-              (p) => DropdownMenuItem(value: p, child: Text(periodLabel(p))),
-            )
+            .map((p) => DropdownMenuItem(value: p, child: Text(periodLabel(p))))
             .toList(),
         onChanged: (v) => v == null ? null : onChanged(v),
       ),
@@ -184,9 +204,12 @@ class _Roster extends StatelessWidget {
   final String query;
   final String? hostel;
   final String? status;
+  final int page;
+  final int pageSize;
   final ValueChanged<String> onQuery;
   final ValueChanged<String?> onHostel;
   final ValueChanged<String?> onStatus;
+  final ValueChanged<int> onPage;
 
   const _Roster({
     required this.collegeId,
@@ -197,9 +220,12 @@ class _Roster extends StatelessWidget {
     required this.query,
     required this.hostel,
     required this.status,
+    required this.page,
+    required this.pageSize,
     required this.onQuery,
     required this.onHostel,
     required this.onStatus,
+    required this.onPage,
   });
 
   @override
@@ -231,11 +257,12 @@ class _Roster extends StatelessWidget {
             // Only residents owe a mess fee — staff and the owner do not.
             // Allotment is the honest test for "lives here", and it is data,
             // not a role name.
-            final students = userSnap.data!
-                .where((u) => !u.isSuperAdmin)
-                .where((u) => u.isAllotted)
-                .toList()
-              ..sort((a, b) => a.name.compareTo(b.name));
+            final students =
+                userSnap.data!
+                    .where((u) => !u.isSuperAdmin)
+                    .where((u) => u.isAllotted)
+                    .toList()
+                  ..sort((a, b) => a.name.compareTo(b.name));
 
             final all = FeeService.standingsFor(
               students: students,
@@ -245,15 +272,18 @@ class _Roster extends StatelessWidget {
 
             final hostels =
                 students
-                    .map((s) => s.hostelName)
+                    .map((s) => s.hostelLabel)
                     .whereType<String>()
                     .toSet()
                     .toList()
-                  ..sort();
+                  // BH-10 belongs after BH-9, not between BH-1 and BH-2.
+                  ..sort(Hostel.compareLabels);
 
             final q = query.trim().toLowerCase();
             final shown = all.where((s) {
-              if (hostel != null && s.hostelName != hostel) return false;
+              if (hostel != null && HostelCodes.of(s.hostelName) != hostel) {
+                return false;
+              }
               if (status == 'paid' && !s.isPaid) return false;
               if (status == 'unpaid' && s.isPaid) return false;
               if (q.isEmpty) return true;
@@ -263,6 +293,18 @@ class _Roster extends StatelessWidget {
             }).toList();
 
             final unpaidShown = shown.where((s) => !s.isPaid).toList();
+
+            // Indexed once per build. A `firstWhere` per row is a linear scan
+            // of the whole roster, so rendering was quadratic — and it ran
+            // again on every keystroke in the search box.
+            final byUid = {for (final u in students) u.uid: u};
+
+            final pageCount = shown.isEmpty
+                ? 1
+                : (shown.length / pageSize).ceil();
+            final page = this.page.clamp(0, pageCount - 1);
+            final pageStart = page * pageSize;
+            final pageItems = shown.skip(pageStart).take(pageSize).toList();
 
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -276,7 +318,8 @@ class _Roster extends StatelessWidget {
                         child: TextField(
                           onChanged: onQuery,
                           decoration: const InputDecoration(
-                            hintText: 'Search name, registration number '
+                            hintText:
+                                'Search name, registration number '
                                 'or room',
                             prefixIcon: Icon(Icons.search_rounded),
                             isDense: true,
@@ -321,7 +364,10 @@ class _Roster extends StatelessWidget {
                           hint: const Text('All'),
                           items: const [
                             DropdownMenuItem(value: null, child: Text('All')),
-                            DropdownMenuItem(value: 'paid', child: Text('Paid')),
+                            DropdownMenuItem(
+                              value: 'paid',
+                              child: Text('Paid'),
+                            ),
                             DropdownMenuItem(
                               value: 'unpaid',
                               child: Text('Unpaid'),
@@ -374,24 +420,23 @@ class _Roster extends StatelessWidget {
                       ),
                     ),
                   )
-                else
+                else ...[
                   AppCard(
                     padding: const EdgeInsets.symmetric(vertical: 6),
                     child: Column(
                       children: [
-                        for (var i = 0; i < shown.length; i++) ...[
-                          _StandingRow(
-                            standing: shown[i],
-                            student: students.firstWhere(
-                              (u) => u.uid == shown[i].studentUid,
+                        for (var i = 0; i < pageItems.length; i++) ...[
+                          if (byUid[pageItems[i].studentUid] case final u?)
+                            _StandingRow(
+                              standing: pageItems[i],
+                              student: u,
+                              collegeId: collegeId,
+                              period: period,
+                              amount: amount,
+                              symbol: symbol,
+                              canManage: canManage,
                             ),
-                            collegeId: collegeId,
-                            period: period,
-                            amount: amount,
-                            symbol: symbol,
-                            canManage: canManage,
-                          ),
-                          if (i != shown.length - 1)
+                          if (i != pageItems.length - 1)
                             Divider(
                               height: 1,
                               indent: 20,
@@ -402,6 +447,39 @@ class _Roster extends StatelessWidget {
                       ],
                     ),
                   ),
+                  if (pageCount > 1) ...[
+                    const SizedBox(height: 14),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        OutlinedButton(
+                          onPressed: page > 0 ? () => onPage(page - 1) : null,
+                          child: const Text('Previous'),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          child: Text(
+                            'Page ${page + 1} of $pageCount  '
+                            '(${pageStart + 1}–'
+                            '${pageStart + pageItems.length} of '
+                            '${shown.length})',
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.textMuted,
+                            ),
+                          ),
+                        ),
+                        OutlinedButton(
+                          onPressed: page < pageCount - 1
+                              ? () => onPage(page + 1)
+                              : null,
+                          child: const Text('Next'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
               ],
             );
           },
@@ -555,9 +633,7 @@ class _MarkAllButtonState extends State<_MarkAllButton> {
         period: widget.period,
         amount: widget.amount,
       );
-      messenger.showSnackBar(
-        SnackBar(content: Text('Marked $done paid')),
-      );
+      messenger.showSnackBar(SnackBar(content: Text('Marked $done paid')));
     } catch (e) {
       messenger.showSnackBar(
         SnackBar(content: Text(AuthService.describeError(e))),
@@ -672,15 +748,13 @@ class _StandingRow extends StatelessWidget {
                 Text(
                   [
                     if (standing.studentRegNo != null) standing.studentRegNo!,
-                    if (standing.hostelName != null) standing.hostelName!,
+                    if (standing.hostelName != null)
+                      HostelCodes.of(standing.hostelName)!,
                     if (standing.roomNumber != null)
                       'Room ${standing.roomNumber}',
                   ].join(' · '),
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: AppColors.textMuted,
-                    fontSize: 12.5,
-                  ),
+                  style: TextStyle(color: AppColors.textMuted, fontSize: 12.5),
                 ),
               ],
             ),
@@ -700,10 +774,7 @@ class _StandingRow extends StatelessWidget {
           const SizedBox(width: 14),
           Text(
             '$symbol${(standing.record?.amount ?? amount).toStringAsFixed(0)}',
-            style: const TextStyle(
-              fontSize: 14.5,
-              fontWeight: FontWeight.w800,
-            ),
+            style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w800),
           ),
           const SizedBox(width: 14),
           StatusPill(paid ? 'PAID' : 'UNPAID', fg, bg),
@@ -711,10 +782,7 @@ class _StandingRow extends StatelessWidget {
             const SizedBox(width: 10),
             Tooltip(
               message: paid ? 'Undo — mark unpaid' : 'Mark paid',
-              child: Switch(
-                value: paid,
-                onChanged: (_) => _toggle(context),
-              ),
+              child: Switch(value: paid, onChanged: (_) => _toggle(context)),
             ),
           ],
         ],
@@ -853,8 +921,7 @@ class _MyFees extends StatelessWidget {
                     )
                   else
                     for (var i = 0; i < records.length; i++) ...[
-                      if (i != 0)
-                        Divider(height: 18, color: AppColors.border),
+                      if (i != 0) Divider(height: 18, color: AppColors.border),
                       Row(
                         children: [
                           Icon(

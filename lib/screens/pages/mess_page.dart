@@ -51,10 +51,7 @@ class _MessPageState extends State<MessPage> {
                   const SizedBox(height: 4),
                   Text(
                     'The weekly menu, and what a month of it costs.',
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: AppColors.textMuted,
-                    ),
+                    style: TextStyle(fontSize: 13, color: AppColors.textMuted),
                   ),
                   const SizedBox(height: 16),
                   Row(

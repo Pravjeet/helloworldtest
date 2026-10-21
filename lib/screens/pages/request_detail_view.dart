@@ -284,10 +284,7 @@ class _RequestDetailViewState extends State<RequestDetailView> {
                   padding: const EdgeInsets.all(14),
                   child: Text(
                     _error!,
-                    style: TextStyle(
-                      color: AppColors.danger,
-                      fontSize: 13,
-                    ),
+                    style: TextStyle(color: AppColors.danger, fontSize: 13),
                   ),
                 ),
               ],
@@ -321,30 +318,26 @@ class _RequestDetailViewState extends State<RequestDetailView> {
                         spacing: 10,
                         runSpacing: 10,
                         children: [
-                          for (final s in canProgress
-                              ? [RequestStatus.resolved]
-                              : actions)
+                          for (final s
+                              in canProgress
+                                  ? [RequestStatus.resolved]
+                                  : actions)
                             FilledButton(
-                              onPressed: _busy
-                                  ? null
-                                  : () => _act(request, s),
+                              onPressed: _busy ? null : () => _act(request, s),
                               style: FilledButton.styleFrom(
-                                backgroundColor:
-                                    s == RequestStatus.rejected
+                                backgroundColor: s == RequestStatus.rejected
                                     ? AppColors.danger
                                     : s == RequestStatus.inProgress
                                     ? AppColors.info
                                     : AppColors.primary,
                               ),
-                              child: Text(
-                                switch (s) {
-                                  RequestStatus.approved => 'Approve',
-                                  RequestStatus.rejected => 'Reject',
-                                  RequestStatus.inProgress => 'Mark in progress',
-                                  RequestStatus.resolved => 'Mark resolved',
-                                  RequestStatus.pending => 'Pending',
-                                },
-                              ),
+                              child: Text(switch (s) {
+                                RequestStatus.approved => 'Approve',
+                                RequestStatus.rejected => 'Reject',
+                                RequestStatus.inProgress => 'Mark in progress',
+                                RequestStatus.resolved => 'Mark resolved',
+                                RequestStatus.pending => 'Pending',
+                              }),
                             ),
                         ],
                       ),
@@ -410,9 +403,7 @@ class _Line extends StatelessWidget {
             ),
           ),
         ),
-        Expanded(
-          child: Text(value, style: const TextStyle(fontSize: 13.5)),
-        ),
+        Expanded(child: Text(value, style: const TextStyle(fontSize: 13.5))),
       ],
     ),
   );

@@ -1,3 +1,6 @@
+# Firebase CLI's local deploy cache — regenerated on every `firebase deploy`.
+.firebase/
+
 # Miscellaneous
 *.class
 *.log
@@ -44,6 +47,9 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
+# Records which firestore.rules version this machine last deployed
+.rules-deployed
+
 # ---------------------------------------------------------------------
 # Admin tooling (tools/)
 #
@@ -58,3 +64,25 @@ serviceAccountKey.json
 *-firebase-adminsdk-*.json
 tools/node_modules/
 tools/backups/
+
+# Local editor/assistant scratch — machine-specific, not project config.
+.claude/
+CLAUDE.md
+
+# ---------------------------------------------------------------------
+# Student rosters
+#
+# Import sheets carry real students' names, registration numbers, home
+# addresses and personal email addresses. Git history is effectively
+# permanent and this repository is shared, so a roster committed once is
+# a disclosure that cannot be taken back by deleting the file later.
+#
+# Keep the sheet on disk and work with it normally — it just never
+# becomes a commit. Nothing tracked matches these patterns today; if a
+# blank template ever genuinely needs versioning, `git add -f` it.
+# ---------------------------------------------------------------------
+*.csv
+*.xlsx
+*.xls
+rules-tests/node_modules/
+rules-tests/firestore-debug.log

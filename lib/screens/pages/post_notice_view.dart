@@ -11,11 +11,7 @@ class PostNoticeView extends StatefulWidget {
   final VoidCallback onBack;
   final VoidCallback onDone;
 
-  const PostNoticeView({
-    super.key,
-    required this.onBack,
-    required this.onDone,
-  });
+  const PostNoticeView({super.key, required this.onBack, required this.onDone});
 
   @override
   State<PostNoticeView> createState() => _PostNoticeViewState();
@@ -70,9 +66,7 @@ class _PostNoticeViewState extends State<PostNoticeView> {
         category: _category,
         expiryDate: _expiryDate,
       );
-      messenger.showSnackBar(
-        const SnackBar(content: Text('Notice posted')),
-      );
+      messenger.showSnackBar(const SnackBar(content: Text('Notice posted')));
       widget.onDone();
     } catch (e) {
       if (mounted) setState(() => _error = AuthService.describeError(e));
@@ -84,8 +78,18 @@ class _PostNoticeViewState extends State<PostNoticeView> {
   @override
   Widget build(BuildContext context) {
     const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
     ];
 
     return ConstrainedBox(
@@ -131,10 +135,7 @@ class _PostNoticeViewState extends State<PostNoticeView> {
                     Expanded(
                       child: Text(
                         _error!,
-                        style: TextStyle(
-                          color: AppColors.danger,
-                          fontSize: 13,
-                        ),
+                        style: TextStyle(color: AppColors.danger, fontSize: 13),
                       ),
                     ),
                   ],
@@ -160,19 +161,15 @@ class _PostNoticeViewState extends State<PostNoticeView> {
                   const SizedBox(height: 18),
                   DropdownButtonFormField<String>(
                     initialValue: _category,
-                    decoration: const InputDecoration(
-                      labelText: 'Category',
-                    ),
+                    decoration: const InputDecoration(labelText: 'Category'),
                     items: kNoticeCategories
-                        .map(
-                          (c) => DropdownMenuItem(value: c, child: Text(c)),
-                        )
+                        .map((c) => DropdownMenuItem(value: c, child: Text(c)))
                         .toList(),
                     onChanged: _busy
                         ? null
                         : (v) => setState(
-                              () => _category = v ?? kNoticeCategories.first,
-                            ),
+                            () => _category = v ?? kNoticeCategories.first,
+                          ),
                   ),
                   const SizedBox(height: 18),
                   TextFormField(
@@ -182,7 +179,8 @@ class _PostNoticeViewState extends State<PostNoticeView> {
                     decoration: const InputDecoration(
                       labelText: 'Message',
                       alignLabelWithHint: true,
-                      hintText: 'Full details of the notice. Students will see '
+                      hintText:
+                          'Full details of the notice. Students will see '
                           'this in the notices section.',
                     ),
                     validator: (v) => (v == null || v.trim().length < 10)
@@ -197,14 +195,16 @@ class _PostNoticeViewState extends State<PostNoticeView> {
                       decoration: const InputDecoration(
                         labelText: 'Expires (optional)',
                         helperText: 'Leave empty to keep it active permanently',
-                        suffixIcon:
-                            Icon(Icons.calendar_today_rounded, size: 17),
+                        suffixIcon: Icon(
+                          Icons.calendar_today_rounded,
+                          size: 17,
+                        ),
                       ),
                       child: Text(
                         _expiryDate == null
                             ? 'Tap to set expiry date'
                             : '${_expiryDate!.day} ${months[_expiryDate!.month - 1]} '
-                              '${_expiryDate!.year}',
+                                  '${_expiryDate!.year}',
                         style: TextStyle(
                           fontSize: 14,
                           color: _expiryDate == null
@@ -217,7 +217,9 @@ class _PostNoticeViewState extends State<PostNoticeView> {
                   if (_expiryDate != null) ...[
                     const SizedBox(height: 8),
                     TextButton.icon(
-                      onPressed: _busy ? null : () => setState(() => _expiryDate = null),
+                      onPressed: _busy
+                          ? null
+                          : () => setState(() => _expiryDate = null),
                       icon: const Icon(Icons.close_rounded, size: 16),
                       label: const Text('Clear expiry'),
                     ),

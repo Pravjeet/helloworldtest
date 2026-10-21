@@ -42,22 +42,31 @@ class FineService {
         .map((s) => s.docs.map((d) => Fine.fromMap(d.id, d.data())).toList()),
   );
 
+  final CachedStreamPool<List<Fine>> _minePool = CachedStreamPool();
+
   /// One student's own fines. Not ordered in the query — an `orderBy` next to
   /// the `where` would need a composite index, and sorting a handful of
   /// documents client-side is free.
+  ///
+  /// Pooled per student. The document count is small, but this sits in
+  /// `build()` on the student dashboard and the fines page — the two screens
+  /// every one of a few thousand residents opens — so an unpooled re-read on
+  /// each rebuild is a per-student cost paid thousands of times over.
   Stream<List<Fine>> watchMine(String collegeId, String uid) =>
-      _col(collegeId).where('studentUid', isEqualTo: uid).snapshots().map((s) {
-        final list = s.docs
-            .map((d) => Fine.fromMap(d.id, d.data()))
-            .toList();
-        list.sort((a, b) {
-          final at = a.createdAt, bt = b.createdAt;
-          if (at == null && bt == null) return 0;
-          if (at == null) return 1;
-          if (bt == null) return -1;
-          return bt.compareTo(at);
+      _minePool.stream('$collegeId/$uid', () {
+        return _col(collegeId).where('studentUid', isEqualTo: uid).snapshots().map((
+          s,
+        ) {
+          final list = s.docs.map((d) => Fine.fromMap(d.id, d.data())).toList();
+          list.sort((a, b) {
+            final at = a.createdAt, bt = b.createdAt;
+            if (at == null && bt == null) return 0;
+            if (at == null) return 1;
+            if (bt == null) return -1;
+            return bt.compareTo(at);
+          });
+          return list;
         });
-        return list;
       });
 
   // ------------------------------ writes -----------------------------
@@ -208,7 +217,7 @@ class FineService {
       summary: fined.isEmpty
           ? 'Issued order $orderNo against $who'
           : 'Fined ${fined.length} of $who '
-                '₹$total total for ${category!.trim()} (order $orderNo)',
+                '\u20b9$total total for ${category!.trim()} (order $orderNo)',
       targetLabel: who,
       // Points at the order, which is the one document that always exists —
       // a group order has many fines and an order-only has none, so neither
@@ -245,7 +254,8 @@ class FineService {
       collegeId: collegeId,
       actor: handler,
       action: 'fine.${status.name}',
-      summary: 'Marked ${fine.studentName}\'s ₹${fine.amount} fine '
+      summary:
+          'Marked ${fine.studentName}\'s ₹${fine.amount} fine '
           '${status.label.toLowerCase()}',
       targetLabel: fine.studentName,
       path: 'colleges/$collegeId/fines/${fine.id}',
@@ -287,8 +297,9 @@ class FineService {
   /// reasoning as [deleteAll]: the person the money was owed by is gone, so
   /// there is nothing left to collect against.
   Future<int> deleteForStudent(String collegeId, String uid) async {
-    final snap =
-        await _col(collegeId).where('studentUid', isEqualTo: uid).get();
+    final snap = await _col(
+      collegeId,
+    ).where('studentUid', isEqualTo: uid).get();
     if (snap.docs.isEmpty) return 0;
 
     for (var i = 0; i < snap.docs.length; i += 400) {

@@ -55,9 +55,9 @@ class _FinesPageState extends State<FinesPage> {
                   style: TextStyle(fontSize: 13, height: 1.5),
                 ),
                 const SizedBox(height: 16),
-                const Text(
+                Text(
                   'Type $phrase to confirm',
-                  style: TextStyle(
+                  style: const TextStyle(
                     fontSize: 12.5,
                     fontWeight: FontWeight.w700,
                   ),
@@ -129,7 +129,7 @@ class _FinesPageState extends State<FinesPage> {
 
     if (!canViewAll && !showsMine) {
       return AppCard(
-        padding: const EdgeInsets.symmetric(vertical: 54),
+        padding: EdgeInsets.symmetric(vertical: 54),
         child: Center(
           child: Text(
             'You don\'t have access to fines.',
@@ -207,10 +207,7 @@ class _FinesPageState extends State<FinesPage> {
                 canViewAll
                     ? 'Every fine on record. Open Overview for the dashboard.'
                     : 'Fines raised against you, and what is still owed.',
-                style: TextStyle(
-                  fontSize: 13,
-                  color: AppColors.textMuted,
-                ),
+                style: TextStyle(fontSize: 13, color: AppColors.textMuted),
               ),
               if (canViewAll) ...[
                 const SizedBox(height: 16),
@@ -220,7 +217,8 @@ class _FinesPageState extends State<FinesPage> {
                       child: TextField(
                         onChanged: (v) => setState(() => _query = v),
                         decoration: const InputDecoration(
-                          hintText: 'Search student, registration number, '
+                          hintText:
+                              'Search student, registration number, '
                               'room or reason',
                           prefixIcon: Icon(Icons.search_rounded),
                           isDense: true,
@@ -317,7 +315,7 @@ class _Register extends StatelessWidget {
         final all = snap.data!;
         if (all.isEmpty) {
           return AppCard(
-            padding: const EdgeInsets.symmetric(vertical: 60, horizontal: 28),
+            padding: EdgeInsets.symmetric(vertical: 60, horizontal: 28),
             child: Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -327,12 +325,12 @@ class _Register extends StatelessWidget {
                     size: 34,
                     color: AppColors.textMuted,
                   ),
-                  const SizedBox(height: 14),
-                  const Text(
+                  SizedBox(height: 14),
+                  Text(
                     'No fines have been imposed yet',
                     style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
                   ),
-                  const SizedBox(height: 6),
+                  SizedBox(height: 6),
                   Text(
                     'Impose the first one and the dashboard fills in.',
                     style: TextStyle(color: AppColors.textMuted, fontSize: 13),
@@ -348,7 +346,7 @@ class _Register extends StatelessWidget {
 
         if (shown.isEmpty) {
           return AppCard(
-            padding: const EdgeInsets.symmetric(vertical: 54),
+            padding: EdgeInsets.symmetric(vertical: 54),
             child: Center(
               child: Text(
                 'No fines match that search.',
@@ -444,7 +442,7 @@ class _MyFines extends StatelessWidget {
         final mine = snap.data!;
         if (mine.isEmpty) {
           return AppCard(
-            padding: const EdgeInsets.symmetric(vertical: 56, horizontal: 28),
+            padding: EdgeInsets.symmetric(vertical: 56, horizontal: 28),
             child: Center(
               child: Text(
                 'You have no fines. Keep it that way.',

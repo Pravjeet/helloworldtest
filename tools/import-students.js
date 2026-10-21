@@ -190,10 +190,11 @@ if (!creates.length && !updates.length) {
 
 // --- write ---------------------------------------------------------------
 
-console.log(`\nWriting (${CONCURRENCY} at a time)…`);
+console.log(`\nCreating accounts (${CONCURRENCY} at a time)…`);
 
 const failures = [];
 const imported = [];      // {uid, values, line}
+const pendingProfiles = []; // {ref, data, line, authEmail} — committed in bulk
 let madeAccounts = 0;
 let updatedProfiles = 0;
 
@@ -230,11 +231,18 @@ async function importOne(row) {
       roleName: row.role.name,
     });
 
-    // merge:true so a re-run never wipes room fields written by allotment.
-    await db.collection('users').doc(uid).set(
-      { ...profile, createdAt: FieldValue.serverTimestamp() },
-      { merge: true },
-    );
+    // Collected, not written. This used to be an awaited `.set()` right here,
+    // which made every row two sequential round trips — create the account,
+    // then wait for Firestore — so roughly half the import was spent waiting
+    // on writes that had no reason to be serialised behind each other. They
+    // are committed in batches once the accounts exist; see below.
+    pendingProfiles.push({
+      ref: db.collection('users').doc(uid),
+      // merge:true so a re-run never wipes room fields written by allotment.
+      data: { ...profile, createdAt: FieldValue.serverTimestamp() },
+      line: row.line,
+      authEmail: row.authEmail,
+    });
 
     imported.push({
       uid,
@@ -257,6 +265,35 @@ for (const group of chunk([...creates, ...updates], CONCURRENCY)) {
   await Promise.all(group.map(importOne));
 }
 console.log('');
+
+// --- profiles, in batches ---------------------------------------------------
+//
+// 450 per commit rather than one write per row. Firestore caps a batch at 500;
+// 450 leaves headroom. For a full intake this turns ~2,600 sequential round
+// trips into six, and it is the single biggest reason the import is quicker
+// than it was.
+//
+// A failed batch is reported per row, the same granularity the old per-row
+// write gave, so a partial failure still names who did not land. Re-running
+// the import fixes them: the account already exists and is adopted, and the
+// profile write is a merge on a deterministic uid.
+if (pendingProfiles.length) {
+  process.stdout.write(`Writing ${pendingProfiles.length} profile(s)`);
+  for (const group of chunk(pendingProfiles, 450)) {
+    try {
+      const batch = db.batch();
+      group.forEach((p) => batch.set(p.ref, p.data, { merge: true }));
+      await batch.commit();
+      process.stdout.write('.');
+    } catch (e) {
+      process.stdout.write('x');
+      for (const p of group) {
+        failures.push(`line ${p.line} (${p.authEmail}): profile write — ${e.message}`);
+      }
+    }
+  }
+  console.log('');
+}
 
 // --- room allotment ------------------------------------------------------
 //

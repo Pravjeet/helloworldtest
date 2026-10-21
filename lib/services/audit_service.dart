@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../models/app_user.dart';
 import '../models/audit_entry.dart';
+import 'stream_cache.dart';
 
 /// Records what changed, and puts it back when asked.
 ///
@@ -26,14 +27,25 @@ class AuditService {
 
   // ------------------------------ reads ------------------------------
 
+  final CachedStreamPool<List<AuditEntry>> _pool = CachedStreamPool();
+
+  /// Pooled per college+limit. The audit page rebuilds on every filter change
+  /// and every keystroke in its search box; unpooled, each rebuild handed
+  /// `StreamBuilder` a new stream object, which tore down the old listener and
+  /// paid for all [limit] entries again. See [CachedStream].
   Stream<List<AuditEntry>> watch(String collegeId, {int limit = 200}) =>
-      _col(collegeId)
-          .orderBy('createdAt', descending: true)
-          .limit(limit)
-          .snapshots()
-          .map(
-            (s) => s.docs.map((d) => AuditEntry.fromMap(d.id, d.data())).toList(),
-          );
+      _pool.stream(
+        '$collegeId/$limit',
+        () => _col(collegeId)
+            .orderBy('createdAt', descending: true)
+            .limit(limit)
+            .snapshots()
+            .map(
+              (s) => s.docs
+                  .map((d) => AuditEntry.fromMap(d.id, d.data()))
+                  .toList(),
+            ),
+      );
 
   // ------------------------------ writes -----------------------------
 

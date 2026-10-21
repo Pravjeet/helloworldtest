@@ -58,9 +58,7 @@ class _ProfilePageState extends State<ProfilePage> {
         currentPassword: result.currentPassword,
         newPassword: result.newPassword,
       );
-      messenger.showSnackBar(
-        const SnackBar(content: Text('Password changed')),
-      );
+      messenger.showSnackBar(const SnackBar(content: Text('Password changed')));
     } catch (e) {
       messenger.showSnackBar(
         SnackBar(content: Text(AuthService.describeError(e))),
@@ -194,13 +192,9 @@ class _ProfilePageState extends State<ProfilePage> {
                     ),
                   ),
                   const SizedBox(height: 20),
-                  // Wrap, not Row: four buttons (three for a synthetic
-                  // login) don't fit this card's own 700px max-width once
-                  // labels are this long — they flow to a second line
-                  // instead of overflowing off the right edge.
                   Wrap(
                     spacing: 12,
-                    runSpacing: 10,
+                    runSpacing: 12,
                     children: [
                       ElevatedButton(
                         onPressed: _busy ? null : () => _save(user.uid),
@@ -214,9 +208,7 @@ class _ProfilePageState extends State<ProfilePage> {
                       ),
                       if (!Identity.isSynthetic(user.email)) ...[
                         OutlinedButton(
-                          onPressed: _busy
-                              ? null
-                              : () => _changeEmail(context),
+                          onPressed: _busy ? null : () => _changeEmail(context),
                           child: const Text('Change email'),
                         ),
                         OutlinedButton(
@@ -226,10 +218,9 @@ class _ProfilePageState extends State<ProfilePage> {
                                   final messenger = ScaffoldMessenger.of(
                                     context,
                                   );
-                                  await AuthService.instance
-                                      .sendPasswordReset(
-                                        Identity.display(user.email),
-                                      );
+                                  await AuthService.instance.sendPasswordReset(
+                                    Identity.display(user.email),
+                                  );
                                   messenger.showSnackBar(
                                     const SnackBar(
                                       content: Text(

@@ -1,5 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import 'app_user.dart';
+import 'enrollment.dart';
+
 /// Who a hostel accommodates. Stored as the enum `name` string.
 enum HostelGender { boys, girls, coed }
 
@@ -138,6 +141,55 @@ class Hostel {
     'occupiedBeds': occupiedBeds,
   };
 
+  /// Orders hostels the way their codes read: BH-1, BH-2 … BH-9, BH-10.
+  ///
+  /// Plain string ordering puts BH-10 between BH-1 and BH-2, because it
+  /// compares "1" then "0" against "2" character by character. This splits
+  /// each code into runs of digits and non-digits and compares the digit runs
+  /// numerically, so the list reads in building order rather than dictionary
+  /// order.
+  ///
+  /// Sorted on [code] when there is one and [name] otherwise — the code is
+  /// what the tiles show and what people say out loud ("BH-9", not "Meghraj
+  /// Goyal House"). Codes are grouped before comparing numbers, so every BH
+  /// sorts before every GH regardless of number.
+  static int compareByCode(Hostel a, Hostel b) {
+    final left = a.code.trim().isEmpty ? a.name : a.code;
+    final right = b.code.trim().isEmpty ? b.name : b.code;
+    return _naturalCompare(left.toLowerCase(), right.toLowerCase());
+  }
+
+  /// The same ordering for bare labels, where all a screen has is the text of
+  /// a hostel code in a dropdown rather than the [Hostel] itself.
+  static int compareLabels(String a, String b) =>
+      _naturalCompare(a.toLowerCase(), b.toLowerCase());
+
+  static final RegExp _chunks = RegExp(r'\d+|\D+');
+
+  static int _naturalCompare(String a, String b) {
+    final ax = _chunks.allMatches(a).map((m) => m[0]!).toList();
+    final bx = _chunks.allMatches(b).map((m) => m[0]!).toList();
+
+    for (var i = 0; i < ax.length && i < bx.length; i++) {
+      final l = ax[i], r = bx[i];
+      final ln = int.tryParse(l), rn = int.tryParse(r);
+
+      // Two numbers compare as numbers; anything else compares as text. A
+      // number against text falls through to text so the order stays total.
+      final cmp = (ln != null && rn != null)
+          ? ln.compareTo(rn)
+          : l.compareTo(r);
+      if (cmp != 0) return cmp;
+    }
+    return ax.length.compareTo(bx.length);
+  }
+
+  /// What the app shows for this hostel: its code ("BH-3"), which is what
+  /// staff actually call it. The full name is an alias, kept for the Hostels
+  /// & Rooms page and the editor. Falls back to the name only when no code
+  /// has been set.
+  String get label => code.trim().isEmpty ? name : code.trim();
+
   int get freeBeds => (bedCount - occupiedBeds).clamp(0, bedCount);
 
   /// 0.0 – 1.0. Guarded against divide-by-zero on a hostel with no rooms.
@@ -191,6 +243,13 @@ class Room {
   final num? rentPerBed;
   final String? note;
 
+  /// What's wrong, while [status] is [RoomStatus.maintenance] — separate from
+  /// [note], which is a standing remark about the room ("corner room") and
+  /// has nothing to do with whether it's currently out of service. Set
+  /// alongside the status flip and cleared when it flips back to active, so
+  /// it never lingers as a stale warning on a room that's fine again.
+  final String? maintenanceNote;
+
   const Room({
     required this.id,
     required this.number,
@@ -201,6 +260,7 @@ class Room {
     this.occupantUids = const [],
     this.rentPerBed,
     this.note,
+    this.maintenanceNote,
   });
 
   factory Room.fromMap(String id, Map<String, dynamic> m) => Room(
@@ -217,6 +277,7 @@ class Room {
         .toList(),
     rentPerBed: m['rentPerBed'] as num?,
     note: m['note'] as String?,
+    maintenanceNote: m['maintenanceNote'] as String?,
   );
 
   Map<String, dynamic> toMap() => {
@@ -228,6 +289,7 @@ class Room {
     'occupantUids': occupantUids,
     'rentPerBed': rentPerBed,
     'note': note,
+    'maintenanceNote': maintenanceNote,
   };
 
   int get occupied => occupantUids.length;
@@ -236,8 +298,7 @@ class Room {
   bool get isAvailable => status == RoomStatus.active && !isFull;
 
   /// "2 Seater" / "Single" — matches the phrasing in the student mockup.
-  String get capacityLabel =>
-      capacity == 1 ? 'Single' : '$capacity Seater';
+  String get capacityLabel => capacity == 1 ? 'Single' : '$capacity Seater';
 
   Room copyWith({
     int? capacity,
@@ -246,6 +307,7 @@ class Room {
     List<String>? occupantUids,
     num? rentPerBed,
     String? note,
+    String? maintenanceNote,
   }) => Room(
     id: id,
     number: number,
@@ -256,6 +318,7 @@ class Room {
     occupantUids: occupantUids ?? this.occupantUids,
     rentPerBed: rentPerBed ?? this.rentPerBed,
     note: note ?? this.note,
+    maintenanceNote: maintenanceNote ?? this.maintenanceNote,
   );
 }
 
@@ -263,119 +326,111 @@ class Room {
 // Room generation
 // =====================================================================
 
-/// The most rooms one floor may hold.
+/// A run of identical rooms on one floor — "8 rooms, 3 Seater".
 ///
-/// Numbering is floor-prefixed (`floor * 100 + n`), so a hundredth room on
-/// floor 3 would be numbered 400 and collide with floor 4. The limit is the
-/// numbering scheme's, not an arbitrary one.
-const int kMaxRoomsPerFloor = 99;
-
-/// A run of same-seater rooms **on one floor** — "25 rooms, 3 Seater".
-///
-/// A floor is a list of these, which is what lets one floor hold more than
-/// one room type: 25 singles and 25 three-seaters on the same corridor is
-/// two groups on one [FloorPlan], not two separate floors.
+/// A floor is described as a *list* of these, so one floor can hold eight
+/// three-seaters and four singles side by side. Real buildings are like that:
+/// the corner rooms are smaller, the wing by the stairs was converted. The
+/// common case, a floor where every room is the same, is just one group.
 class RoomGroup {
   final int capacity;
-  final int rooms;
+  final int count;
   final List<String> features;
 
   const RoomGroup({
     required this.capacity,
-    required this.rooms,
+    required this.count,
     this.features = const [],
   });
 
-  int get beds => rooms * capacity;
+  int get beds => count * capacity;
 
-  /// "Single" / "3 Seater" — same phrasing as [Room.capacityLabel].
-  String get label => capacity == 1 ? 'Single' : '$capacity Seater';
+  /// "8 × 3 Seater".
+  String get label =>
+      '$count \u00d7 ${capacity == 1 ? 'Single' : '$capacity Seater'}';
 
-  RoomGroup copyWith({int? capacity, int? rooms, List<String>? features}) =>
+  RoomGroup copyWith({int? capacity, int? count, List<String>? features}) =>
       RoomGroup(
         capacity: capacity ?? this.capacity,
-        rooms: rooms ?? this.rooms,
+        count: count ?? this.count,
         features: features ?? this.features,
       );
 }
 
-/// What one floor is made of.
-///
-/// Rooms are numbered in group order along the corridor: with 25 singles
-/// then 25 three-seaters on floor 3, rooms 301–325 are the singles and
-/// 326–350 the three-seaters. That ordering is deliberate — it matches how
-/// a real corridor is walked, so a room number tells you its type.
+/// One floor's rooms, in the order they will be numbered.
 class FloorPlan {
   final List<RoomGroup> groups;
 
   const FloorPlan({this.groups = const []});
 
-  int get rooms => groups.fold(0, (acc, g) => acc + g.rooms);
-  int get beds => groups.fold(0, (acc, g) => acc + g.beds);
+  int get roomCount => groups.fold(0, (a, g) => a + g.count);
+  int get bedCount => groups.fold(0, (a, g) => a + g.beds);
 
-  /// "25 Single + 25 3 Seater", or "—" for an empty floor.
-  String get composition {
-    final parts = groups
-        .where((g) => g.rooms > 0)
-        .map((g) => '${g.rooms} ${g.label}')
-        .toList();
-    return parts.isEmpty ? '—' : parts.join(' + ');
-  }
+  /// True when every room on the floor is the same size — which is what makes
+  /// "convert this floor to N seater" a safe single action.
+  bool get isUniform => groups.map((g) => g.capacity).toSet().length <= 1;
 
-  /// Everything that makes two floors interchangeable in a summary. Features
-  /// are deliberately excluded — they don't change how a floor reads as
-  /// "20 rooms: 10 Single + 10 2 Seater".
-  String get _signature =>
-      groups.where((g) => g.rooms > 0).map((g) => '${g.capacity}x${g.rooms}').join(',');
+  /// "8 × 3 Seater, 4 × Single", or "empty".
+  String get summary => groups.isEmpty || roomCount == 0
+      ? 'empty'
+      : groups.where((g) => g.count > 0).map((g) => g.label).join(', ');
 }
 
-/// The blueprint the "add hostel" form fills in. Kept as a plain value object
-/// so the preview in the UI and the actual write use the exact same maths —
-/// what you see in the preview is literally what gets created.
+/// The blueprint the "add hostel" form fills in.
 ///
-/// Describes the building **floor by floor**. An earlier version described it
-/// by seater type instead, handing each type whole floors of its own, which
-/// made a floor holding two room types impossible to express — the common
-/// case of a corridor that is half singles and half three-seaters.
+/// Floor-first on purpose. The earlier shape described a building as a list of
+/// seater types and *derived* the floors, which meant you could say "60
+/// three-seaters, 25 per floor" but never "floor 1 has eight three-seaters and
+/// four singles". Buildings are laid out floor by floor, so the form now asks
+/// the same way, and [build] simply walks what it was told.
+///
+/// Kept as a plain value object so the preview in the UI and the actual write
+/// use identical maths — what you see in the preview is literally what gets
+/// created.
 class RoomPlan {
-  /// Index 0 is floor 1. A floor with no rooms still occupies its number, so
-  /// the floors above it keep the numbering everyone expects.
   final List<FloorPlan> floorPlans;
 
   const RoomPlan({this.floorPlans = const []});
 
-  /// Every floor laid out identically — the usual case, and what the editor
-  /// starts from before anyone customises a single floor.
+  /// A building where every floor is identical — the quick path in the form.
   factory RoomPlan.uniform({
     required int floors,
-    required List<RoomGroup> groups,
+    required int roomsPerFloor,
+    required int capacity,
+    List<String> features = const [],
   }) => RoomPlan(
-    floorPlans: List.generate(
-      floors < 0 ? 0 : floors,
-      (_) => FloorPlan(groups: groups),
-    ),
+    floorPlans: [
+      for (var i = 0; i < floors; i++)
+        FloorPlan(
+          groups: [
+            RoomGroup(
+              capacity: capacity,
+              count: roomsPerFloor,
+              features: features,
+            ),
+          ],
+        ),
+    ],
   );
 
   int get floors => floorPlans.length;
-  int get totalRooms => floorPlans.fold(0, (acc, f) => acc + f.rooms);
-  int get totalBeds => floorPlans.fold(0, (acc, f) => acc + f.beds);
+  int get totalRooms => floorPlans.fold(0, (a, f) => a + f.roomCount);
+  int get totalBeds => floorPlans.fold(0, (a, f) => a + f.bedCount);
 
-  /// True when some floor asks for more rooms than the numbering can carry.
-  bool get exceedsFloorLimit =>
-      floorPlans.any((f) => f.rooms > kMaxRoomsPerFloor);
-
-  /// Generates every room, floor by floor and group by group.
+  /// Generates every room, floor by floor.
   ///
-  /// Floor-prefixed numbering: floor 1 -> 101, 102...; floor 2 -> 201...
-  /// Room ids are the numbers themselves, so duplicates within a hostel are
-  /// structurally impossible.
+  /// Floor-prefixed numbering, unchanged: floor 1 -> 101, 102…; floor 2 ->
+  /// 201… Groups are laid out in the order given, so a floor of eight
+  /// three-seaters then four singles numbers 101–108 as three-seaters and
+  /// 109–112 as singles.
   List<Room> build() {
     final rooms = <Room>[];
     for (var i = 0; i < floorPlans.length; i++) {
       final floor = i + 1;
-      var n = 1;
+      var n = 0;
       for (final group in floorPlans[i].groups) {
-        for (var r = 0; r < group.rooms; r++) {
+        for (var k = 0; k < group.count; k++) {
+          n++;
           final number = '${floor * 100 + n}';
           rooms.add(
             Room(
@@ -386,7 +441,6 @@ class RoomPlan {
               features: group.features,
             ),
           );
-          n++;
         }
       }
     }
@@ -394,30 +448,45 @@ class RoomPlan {
   }
 
   /// Human summary for the confirmation line, e.g.
-  /// "Floors 1–3: 50 rooms (25 Single + 25 3 Seater), Floor 4: 20 rooms
-  /// (20 Single)".
-  ///
-  /// Consecutive floors built the same way are collapsed into one range —
-  /// a 10-floor hostel of identical floors reads as one clause, not ten.
+  /// "Floor 1: 8 × 3 Seater, 4 × Single · Floor 2: 12 × Single".
   String get rangeSummary {
     final parts = <String>[];
-    var i = 0;
-    while (i < floorPlans.length) {
-      final plan = floorPlans[i];
-      if (plan.rooms == 0) {
-        i++;
-        continue;
-      }
-      final signature = plan._signature;
-      var last = i;
-      while (last + 1 < floorPlans.length &&
-          floorPlans[last + 1]._signature == signature) {
-        last++;
-      }
-      final where = i == last ? 'Floor ${i + 1}' : 'Floors ${i + 1}–${last + 1}';
-      parts.add('$where: ${plan.rooms} rooms (${plan.composition})');
-      i = last + 1;
+    for (var i = 0; i < floorPlans.length; i++) {
+      final f = floorPlans[i];
+      if (f.roomCount <= 0) continue;
+      parts.add('Floor ${i + 1}: ${f.summary}');
     }
-    return parts.isEmpty ? '—' : parts.join(', ');
+    return parts.isEmpty ? '\u2014' : parts.join('  \u00b7  ');
   }
+}
+
+/// Graduates are skipped as well as the deactivated: a hostel's head-count is
+/// the people who live there now, and promotion is what is supposed to move
+/// that number. The live tally in `DataService.countStudentsByHostel` applies
+/// the same rule.
+Map<String, int> studentsByHostel(Iterable<AppUser> users) {
+  final counts = <String, int>{};
+  for (final u in users) {
+    final id = u.hostelId;
+    if (id == null || id.isEmpty || !u.isActive || u.isGraduated) continue;
+    counts[id] = (counts[id] ?? 0) + 1;
+  }
+  return counts;
+}
+
+/// The same tally as [studentsByHostel], from one session's enrollment
+/// records instead of the live roster.
+///
+/// Enrollment carries no `isActive` flag — deactivation is a live-account
+/// concept, and a past session's roster is a record of who was actually
+/// housed that year regardless of whether their account is active today —
+/// so this counts every enrollment with a room, full stop.
+Map<String, int> studentsByHostelFor(Iterable<Enrollment> enrollments) {
+  final counts = <String, int>{};
+  for (final e in enrollments) {
+    final id = e.hostelId;
+    if (id == null || id.isEmpty) continue;
+    counts[id] = (counts[id] ?? 0) + 1;
+  }
+  return counts;
 }

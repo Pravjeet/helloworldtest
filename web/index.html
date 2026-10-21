@@ -18,7 +18,8 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="helloworld — hostel management dashboard for SLIET.">
+  <meta name="robots" content="noindex, nofollow">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
@@ -33,6 +34,145 @@
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
-  <script src="flutter_bootstrap.js" async></script>
+  <script>
+    // Every deploy must reach every browser, with no action from the user —
+    // including one that opened an older build. Three things used to stop it:
+    //
+    //  1. A caching service worker from an earlier Flutter build, which serves
+    //     its cached main.dart.js forever. Unregistering it is not enough on
+    //     its own: a page it already controls stays controlled across a
+    //     reload, so the old code kept coming back.
+    //  2. Tabs left open across a deploy.
+    //  3. Signing in on a tab that has been sitting on the login screen.
+    //
+    // So: evict the worker, and load the app's code from an address unique to
+    // this deploy (?build=<hash>) that no old cache can ever have stored; then
+    // keep watching for the next deploy. Logins survive all of it — Firebase
+    // keeps them in IndexedDB / session storage, never in Cache Storage.
+    (function () {
+      const ATTEMPTS = 'homi-sw-evict-attempts';
+
+      async function evictOldServiceWorkers() {
+        if (!('serviceWorker' in navigator)) return false;
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister()));
+        if ('caches' in window) {
+          const keys = await caches.keys();
+          await Promise.all(keys.map((k) => caches.delete(k)));
+        }
+        return !!navigator.serviceWorker.controller;
+      }
+
+      // Firebase Hosting's ETag is a hash of the file, so it changes exactly
+      // when a deploy changes the app. A HEAD request costs no Firestore reads.
+      async function deployedTag() {
+        try {
+          const r = await fetch('main.dart.js', { method: 'HEAD', cache: 'no-store' });
+          return (r.ok && (r.headers.get('etag') || r.headers.get('last-modified'))) || null;
+        } catch (_) {
+          return null;
+        }
+      }
+
+      // The tag of the code this page is actually running. Known for certain,
+      // because the code was fetched by that exact tag.
+      let loaded = null;
+
+      function loadApp(tag) {
+        loaded = tag;
+        const id = tag ? tag.replace(/[^A-Za-z0-9]/g, '').slice(0, 24) : '';
+        window.__homiBuild = id; // read by flutter_bootstrap.js
+        const s = document.createElement('script');
+        s.src = 'flutter_bootstrap.js' + (id ? '?build=' + id : '');
+        s.async = true;
+        document.body.appendChild(s);
+      }
+
+      function showBanner() {
+        if (document.getElementById('new-version-banner')) return;
+        const bar = document.createElement('div');
+        bar.id = 'new-version-banner';
+        bar.setAttribute('role', 'status');
+        bar.style.cssText =
+          'position:fixed;left:50%;bottom:20px;transform:translateX(-50%);' +
+          'z-index:2147483647;display:flex;gap:12px;align-items:center;' +
+          'background:#1f2937;color:#fff;font:14px system-ui,sans-serif;' +
+          'padding:10px 14px;border-radius:10px;' +
+          'box-shadow:0 6px 24px rgba(0,0,0,.35);';
+        const text = document.createElement('span');
+        text.textContent = 'A new version of helloworld is available.';
+        const btn = document.createElement('button');
+        btn.textContent = 'Reload';
+        btn.style.cssText =
+          'background:#3b82f6;color:#fff;border:0;border-radius:6px;' +
+          'padding:6px 12px;font:600 13px system-ui,sans-serif;cursor:pointer;';
+        btn.onclick = () => location.reload();
+        bar.append(text, btn);
+        document.body.appendChild(bar);
+      }
+
+      let stale = false;
+
+      async function isStale() {
+        if (stale) return true;
+        const now = await deployedTag();
+        stale = !!(now && loaded && now !== loaded);
+        return stale;
+      }
+
+      // Called by the app right after a successful sign-in (see
+      // lib/utils/web_update.dart). Reloading then loses nothing — the user
+      // stays signed in and lands on the new version.
+      window.homiReloadIfStale = async function () {
+        if (await isStale()) {
+          location.reload();
+          return true;
+        }
+        return false;
+      };
+
+      function watchForNewVersion() {
+        async function check() {
+          // A tab nobody is looking at reloads the moment it is looked at
+          // again; one in use gets asked, so a half-filled form isn't lost.
+          if ((await isStale()) && document.visibilityState === 'visible') {
+            showBanner();
+          }
+        }
+        setInterval(check, 5 * 60 * 1000);
+        window.addEventListener('online', check);
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState !== 'visible') return;
+          if (stale) { location.reload(); return; }
+          check();
+        });
+      }
+
+      async function start() {
+        let wasControlled = false;
+        try {
+          wasControlled = await evictOldServiceWorkers();
+        } catch (_) {}
+
+        // A page the old worker still controls reloads until it no longer
+        // does — it stays controlled across the first reload, so one is not
+        // always enough. Capped so a browser that misbehaves can never loop.
+        const tries = Number(sessionStorage.getItem(ATTEMPTS) || 0);
+        if (wasControlled && tries < 3) {
+          sessionStorage.setItem(ATTEMPTS, String(tries + 1));
+          location.reload();
+          return;
+        }
+        sessionStorage.removeItem(ATTEMPTS);
+
+        // Even if still controlled, the ?build= address bypasses the old
+        // worker's cache, so the code that runs is this deploy's.
+        loadApp(await deployedTag());
+        watchForNewVersion();
+      }
+
+      start();
+    })();
+  </script>
 </body>
 </html>

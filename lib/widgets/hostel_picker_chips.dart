@@ -39,7 +39,7 @@ class HostelPickerChips extends StatelessWidget {
       children: hostels.map((h) {
         final isOn = selectedIds.contains(h.id);
         return FilterChip(
-          label: Text(h.code.isEmpty ? h.name : '${h.code} · ${h.name}'),
+          label: Text(h.label),
           selected: isOn,
           onSelected: enabled
               ? (v) {
@@ -61,7 +61,9 @@ class HostelPickerChips extends StatelessWidget {
           backgroundColor: Colors.white,
           selectedColor: AppColors.primarySoft,
           side: BorderSide(color: isOn ? AppColors.primary : AppColors.border),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
         );
       }).toList(),
     );

@@ -6,6 +6,7 @@ import '../screens/pages/audit_page.dart';
 import '../screens/pages/fees_page.dart';
 import '../screens/pages/fines_page.dart';
 import '../screens/pages/hostels_page.dart';
+import '../screens/pages/maintenance_page.dart';
 import '../screens/pages/mess_page.dart';
 import '../screens/pages/my_room_page.dart';
 import '../screens/pages/office_orders_page.dart';
@@ -85,25 +86,25 @@ const List<NavSection> _allSections = [
         builder: _users,
       ),
       NavItem(
+        id: 'academic',
+        label: 'Academic Records',
+        icon: Icons.event_available_rounded,
+        requires: [Perm.academicView, Perm.academicManage],
+        builder: _academic,
+      ),
+      NavItem(
+        id: 'student-overview',
+        label: 'Student Overview',
+        icon: Icons.school_rounded,
+        requires: [Perm.usersView],
+        builder: _studentOverview,
+      ),
+      NavItem(
         id: 'roles',
         label: 'Roles & Permissions',
         icon: Icons.verified_user_rounded,
         requires: [Perm.rolesView],
         builder: _roles,
-      ),
-      NavItem(
-        id: 'academic',
-        label: 'Academic Records',
-        icon: Icons.school_rounded,
-        requires: [Perm.academicView, Perm.academicManage],
-        builder: _academic,
-      ),
-      NavItem(
-        id: 'studentOverview',
-        label: 'Student Overview',
-        icon: Icons.groups_rounded,
-        requires: [Perm.academicView, Perm.academicManage],
-        builder: _studentOverview,
       ),
     ],
   ),
@@ -116,6 +117,13 @@ const List<NavSection> _allSections = [
         icon: Icons.apartment_rounded,
         requires: [Perm.hostelsView],
         builder: _hostels,
+      ),
+      NavItem(
+        id: 'maintenance',
+        label: 'Under Maintenance',
+        icon: Icons.handyman_rounded,
+        requires: [Perm.hostelsView],
+        builder: _maintenance,
       ),
       NavItem(
         id: 'allotment',
@@ -232,15 +240,17 @@ List<NavSection> navigationFor(Session session) {
 // function references are const — which `_allSections` requires.
 Widget _overview(BuildContext c) => const OverviewPage();
 Widget _users(BuildContext c) => const UsersPage();
-Widget _roles(BuildContext c) => const RolesPage();
 Widget _academic(BuildContext c) => const AcademicPage();
+
 Widget _studentOverview(BuildContext c) => const StudentOverviewPage();
+Widget _roles(BuildContext c) => const RolesPage();
 Widget _myRoom(BuildContext c) => const MyRoomPage();
 Widget _profile(BuildContext c) => const ProfilePage();
 
 // Placeholder builders for modules you haven't built yet. Replacing one is a
 // one-line change here — the sidebar, routing and gating already work.
 Widget _hostels(BuildContext c) => const HostelsPage();
+Widget _maintenance(BuildContext c) => const MaintenanceRoomsPage();
 Widget _allotment(BuildContext c) => const AllotmentPage();
 
 Widget _mess(BuildContext c) => const MessPage();

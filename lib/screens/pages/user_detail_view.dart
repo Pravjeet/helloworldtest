@@ -1,3 +1,4 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/identity.dart';
@@ -15,11 +16,14 @@ import '../../services/data_service.dart';
 import '../../services/fine_service.dart';
 import '../../services/hostel_service.dart';
 import '../../services/office_order_service.dart';
+import '../../services/photo_service.dart';
 import '../../widgets/hostel_picker_chips.dart';
+import '../../widgets/student_photo.dart';
 import 'allot_room_view.dart';
 import 'fines_shared.dart' show FineRow, compactAmount;
 import 'impose_fine_view.dart';
-import 'office_orders_page.dart' show OfficeOrderThumb, OfficeOrderViewer;
+import 'office_order_detail_dialog.dart';
+import 'office_orders_page.dart' show OfficeOrderThumb;
 
 /// The full record for one person: everything that wasn't asked for at
 /// account creation, plus their room.
@@ -129,35 +133,132 @@ class _UserDetailViewState extends State<UserDetailView> {
 
 // -------------------------------- header --------------------------------
 
-class _Header extends StatelessWidget {
+class _Header extends StatefulWidget {
   final AppUser user;
   final VoidCallback onBack;
   const _Header({required this.user, required this.onBack});
 
   @override
+  State<_Header> createState() => _HeaderState();
+}
+
+/// Name, role, and the ID photo — first on the page on purpose: it is what a
+/// warden or guard opens this screen to check a face against.
+class _HeaderState extends State<_Header> {
+  bool _busy = false;
+
+  Future<void> _pickPhoto() async {
+    final actor = Session.of(context).user;
+    final messenger = ScaffoldMessenger.of(context);
+
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['jpg', 'jpeg', 'png', 'webp'],
+      withData: true,
+    );
+    final bytes = result?.files.single.bytes;
+    if (bytes == null) return;
+
+    setState(() => _busy = true);
+    try {
+      final jpeg = await PhotoService.prepare(bytes);
+      await PhotoService.instance.upload(
+        student: widget.user,
+        jpeg: jpeg,
+        actor: actor,
+      );
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            'Photo saved (${(jpeg.lengthInBytes / 1024).round()} KB)',
+          ),
+        ),
+      );
+    } on PhotoRejected catch (e) {
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(e.message),
+          duration: const Duration(seconds: 7),
+        ),
+      );
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text(AuthService.describeError(e))),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _removePhoto() async {
+    final actor = Session.of(context).user;
+    final messenger = ScaffoldMessenger.of(context);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: const Text('Remove this photo?'),
+        content: Text(
+          '${widget.user.name} will show initials instead until a new photo '
+          'is uploaded.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('Keep it'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppColors.danger),
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    setState(() => _busy = true);
+    try {
+      await PhotoService.instance.remove(student: widget.user, actor: actor);
+      messenger.showSnackBar(const SnackBar(content: Text('Photo removed')));
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text(AuthService.describeError(e))),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final session = Session.of(context);
+    final user = widget.user;
+
+    // Same line the rules draw: nobody sets their own ID photo (it would
+    // defeat the point), and nobody edits the Super Admin.
+    final canEditPhoto =
+        session.can(Perm.usersEdit) &&
+        !user.isSuperAdmin &&
+        session.user.uid != user.uid;
+
+    final facts = [
+      if ((user.enrollmentNo ?? '').isNotEmpty) user.enrollmentNo!,
+      if ((user.trade ?? '').isNotEmpty) user.trade!,
+      if (user.roomLabel != null) user.roomLabel!,
+    ].join('  ·  ');
+
     return AppCard(
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           IconButton(
-            onPressed: onBack,
+            onPressed: widget.onBack,
             icon: const Icon(Icons.arrow_back_rounded),
             tooltip: 'Back to users',
           ),
           const SizedBox(width: 4),
-          CircleAvatar(
-            radius: 24,
-            backgroundColor: AppColors.primarySoft,
-            child: Text(
-              user.initials,
-              style: TextStyle(
-                color: AppColors.primary,
-                fontWeight: FontWeight.w700,
-                fontSize: 15,
-              ),
-            ),
-          ),
-          const SizedBox(width: 14),
+          StudentPhoto.user(user, width: 96, radius: 12),
+          const SizedBox(width: 16),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -172,20 +273,70 @@ class _Header extends StatelessWidget {
                 const SizedBox(height: 3),
                 Text(
                   '${Identity.display(user.email)} · ${user.displayRole}',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: AppColors.textMuted,
-                  ),
+                  style: TextStyle(fontSize: 13, color: AppColors.textMuted),
                 ),
+                if (facts.isNotEmpty) ...[
+                  const SizedBox(height: 3),
+                  Text(
+                    facts,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textStrong,
+                    ),
+                  ),
+                ],
+                if (canEditPhoto) ...[
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: _busy ? null : _pickPhoto,
+                        icon: const Icon(Icons.add_a_photo_outlined, size: 17),
+                        label: Text(
+                          user.hasPhoto ? 'Change photo' : 'Upload photo',
+                        ),
+                      ),
+                      if (user.hasPhoto)
+                        TextButton.icon(
+                          onPressed: _busy ? null : _removePhoto,
+                          icon: Icon(
+                            Icons.delete_outline_rounded,
+                            size: 17,
+                            color: AppColors.danger,
+                          ),
+                          label: Text(
+                            'Remove',
+                            style: TextStyle(color: AppColors.danger),
+                          ),
+                        ),
+                      if (_busy)
+                        const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'A clear, front-facing photo — JPG or PNG, at least '
+                    '${PhotoService.minSourceBytes ~/ 1024} KB. It is shrunk '
+                    'automatically before saving.',
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      color: AppColors.textMuted,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
           if (!user.isActive)
-            StatusPill(
-              'DISABLED',
-              AppColors.danger,
-              AppColors.dangerSoft,
-            ),
+            StatusPill('DISABLED', AppColors.danger, AppColors.dangerSoft),
         ],
       ),
     );
@@ -292,8 +443,7 @@ class _FinesSection extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 for (var i = 0; i < fines.length; i++) ...[
-                  if (i != 0)
-                    Divider(height: 1, color: AppColors.border),
+                  if (i != 0) Divider(height: 1, color: AppColors.border),
                   Padding(
                     // FineRow brings its own horizontal padding, which would
                     // double up inside a card that already has some.
@@ -325,18 +475,15 @@ class _OfficeOrdersSection extends StatelessWidget {
 
   const _OfficeOrdersSection({required this.user});
 
-  Future<void> _open(BuildContext context, OfficeOrder order) async {
-    final bytes = decodedOrderImage(order);
-    if (bytes == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('That photo could not be read')),
-      );
-      return;
-    }
-    await showDialog<void>(
+  Future<void> _open(BuildContext context, OfficeOrder order) {
+    final session = Session.of(context);
+    return showDialog<void>(
       context: context,
-      barrierColor: Colors.black.withValues(alpha: 0.86),
-      builder: (_) => OfficeOrderViewer(order: order, bytes: bytes),
+      builder: (_) => OfficeOrderDetailDialog(
+        order: order,
+        collegeId: session.user.collegeId,
+        canSeeProfiles: session.can(Perm.usersView),
+      ),
     );
   }
 
@@ -502,7 +649,6 @@ class _DetailFormState extends State<_DetailForm> {
   String? _bloodGroup;
   String? _trade;
   int? _sem;
-  bool _singleRoomEligible = false;
   String? _state;
   late Set<String> _managedHostelIds;
   bool _busy = false;
@@ -532,12 +678,20 @@ class _DetailFormState extends State<_DetailForm> {
       'guardianPhone': TextEditingController(text: u.guardianPhone ?? ''),
       'guardianRelation': TextEditingController(text: u.guardianRelation ?? ''),
       'notes': TextEditingController(text: u.notes ?? ''),
+      'admissionYear': TextEditingController(text: u.admissionYear ?? ''),
+      'section': TextEditingController(text: u.section ?? ''),
+      'motherName': TextEditingController(text: u.motherName ?? ''),
+      'category': TextEditingController(text: u.category ?? ''),
+      'religion': TextEditingController(text: u.religion ?? ''),
+      'city': TextEditingController(text: u.city ?? ''),
+      'pinCode': TextEditingController(text: u.pinCode ?? ''),
+      'permanentMobile': TextEditingController(text: u.permanentMobile ?? ''),
     };
     _gender = u.gender;
-    _bloodGroup = u.bloodGroup;
+    // "0+" from a sheet becomes "O+"; see [bloodGroupLabel].
+    _bloodGroup = bloodGroupLabel(u.bloodGroup);
     _trade = u.trade;
     _sem = u.sem;
-    _singleRoomEligible = u.singleRoomEligible;
     // Fall back to whatever the address already says, so an existing student
     // shows their state without anyone re-entering it.
     _state = u.state ?? stateFromAddress(u.address);
@@ -577,12 +731,19 @@ class _DetailFormState extends State<_DetailForm> {
           'trade': _trade,
           'batch': _val('batch'),
           'sem': _sem,
-          'singleRoomEligible': _singleRoomEligible,
           'state': _state,
           'address': _val('address'),
           'guardianName': _val('guardianName'),
           'guardianPhone': _val('guardianPhone'),
           'guardianRelation': _val('guardianRelation'),
+          'admissionYear': _val('admissionYear'),
+          'section': _val('section'),
+          'motherName': _val('motherName'),
+          'category': _val('category'),
+          'religion': _val('religion'),
+          'city': _val('city'),
+          'pinCode': _val('pinCode'),
+          'permanentMobile': _val('permanentMobile'),
         },
         'officeRoom': _val('officeRoom'),
         'dateOfBirth': _val('dateOfBirth'),
@@ -606,7 +767,8 @@ class _DetailFormState extends State<_DetailForm> {
     return StreamBuilder<AppRole?>(
       stream: AuthService.instance.watchRole(u.collegeId, u.roleId!),
       builder: (context, roleSnap) {
-        final managesHostels = roleSnap.data != null &&
+        final managesHostels =
+            roleSnap.data != null &&
             Perm.managesHostels(roleSnap.data!.permissions);
         if (!managesHostels) {
           return _buildCard(context, managesHostels: false, hostels: const []);
@@ -712,7 +874,15 @@ class _DetailFormState extends State<_DetailForm> {
                         labelText: 'Blood group',
                       ),
                       items:
-                          const ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-']
+                          [
+                                ...kBloodGroups,
+                                // A value the sheet recorded that isn't one of
+                                // the eight ("B", "O=") — listed so the field
+                                // shows it for correction instead of failing.
+                                if (_bloodGroup != null &&
+                                    !kBloodGroups.contains(_bloodGroup))
+                                  _bloodGroup!,
+                              ]
                               .map(
                                 (g) =>
                                     DropdownMenuItem(value: g, child: Text(g)),
@@ -753,7 +923,7 @@ class _DetailFormState extends State<_DetailForm> {
             ),
             if (managesHostels) ...[
               const SizedBox(height: 4),
-              const Text(
+              Text(
                 'Hostels managed',
                 style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
               ),
@@ -835,10 +1005,8 @@ class _DetailFormState extends State<_DetailForm> {
                         ),
                         items: List.generate(8, (i) => i + 1)
                             .map(
-                              (s) => DropdownMenuItem(
-                                value: s,
-                                child: Text('$s'),
-                              ),
+                              (s) =>
+                                  DropdownMenuItem(value: s, child: Text('$s')),
                             )
                             .toList(),
                         onChanged: on ? (v) => setState(() => _sem = v) : null,
@@ -847,43 +1015,26 @@ class _DetailFormState extends State<_DetailForm> {
                   ),
                 ],
               ),
-
-              Container(
-                margin: const EdgeInsets.only(bottom: 14),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 4,
-                  vertical: 2,
-                ),
-                decoration: BoxDecoration(
-                  color: AppColors.canvas,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: SwitchListTile(
-                  value: _singleRoomEligible,
-                  onChanged: on
-                      ? (v) => setState(() => _singleRoomEligible = v)
-                      : null,
-                  dense: true,
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 10),
-                  title: const Text(
-                    'Single-room eligible',
-                    style: TextStyle(
-                      fontSize: 13.5,
-                      fontWeight: FontWeight.w600,
+              Row(
+                children: [
+                  Expanded(
+                    child: _Field(
+                      _c['admissionYear']!,
+                      'Admission year',
+                      hint: '2023-24',
+                      enabled: on,
                     ),
                   ),
-                  subtitle: Text(
-                    'Earned by scoring well in 2nd year. Only affects a B.E. '
-                    'student in year 3+ — Diploma and year 1/2 are always '
-                    '3-Seater, and M.Tech/M.Sc/PhD are always Single, either '
-                    'way. Once set, they keep the room until graduation.',
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      color: AppColors.textMuted,
-                      height: 1.35,
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _Field(
+                      _c['section']!,
+                      'Section',
+                      hint: 'Sec-A',
+                      enabled: on,
                     ),
                   ),
-                ),
+                ],
               ),
 
               const SizedBox(height: 8),
@@ -919,6 +1070,7 @@ class _DetailFormState extends State<_DetailForm> {
                   ),
                 ],
               ),
+              _Field(_c['motherName']!, "Mother's name", enabled: on),
 
               const SizedBox(height: 8),
               const _SectionLabel('Other'),
@@ -948,8 +1100,7 @@ class _DetailFormState extends State<_DetailForm> {
                         ),
                         items: kIndianStates
                             .map(
-                              (s) =>
-                                  DropdownMenuItem(value: s, child: Text(s)),
+                              (s) => DropdownMenuItem(value: s, child: Text(s)),
                             )
                             .toList(),
                         onChanged: on
@@ -959,6 +1110,42 @@ class _DetailFormState extends State<_DetailForm> {
                     ),
                   ),
                 ],
+              ),
+              Row(
+                children: [
+                  Expanded(child: _Field(_c['city']!, 'City', enabled: on)),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _Field(
+                      _c['pinCode']!,
+                      'PIN code',
+                      enabled: on,
+                      keyboard: TextInputType.number,
+                    ),
+                  ),
+                ],
+              ),
+              Row(
+                children: [
+                  Expanded(
+                    child: _Field(
+                      _c['category']!,
+                      'Category',
+                      hint: 'GENERAL',
+                      enabled: on,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _Field(_c['religion']!, 'Religion', enabled: on),
+                  ),
+                ],
+              ),
+              _Field(
+                _c['permanentMobile']!,
+                'Permanent mobile',
+                enabled: on,
+                keyboard: TextInputType.phone,
               ),
             ],
             _Field(
@@ -1023,6 +1210,8 @@ class _RoomSection extends StatelessWidget {
   Widget build(BuildContext context) {
     final canAllot = Session.of(context).can(Perm.allotmentManage);
     final u = user;
+    // Hostel recorded but no specific bed — see [AllotmentService.assignHostelOnly].
+    final hostelOnly = !u.isAllotted && u.hostelId != null;
 
     return AppCard(
       child: Row(
@@ -1030,8 +1219,14 @@ class _RoomSection extends StatelessWidget {
           Icon(
             u.isAllotted
                 ? Icons.meeting_room_rounded
+                : hostelOnly
+                ? Icons.holiday_village_rounded
                 : Icons.no_meeting_room_rounded,
-            color: u.isAllotted ? AppColors.success : AppColors.textMuted,
+            color: u.isAllotted
+                ? AppColors.success
+                : hostelOnly
+                ? AppColors.warning
+                : AppColors.textMuted,
           ),
           const SizedBox(width: 14),
           Expanded(
@@ -1039,7 +1234,11 @@ class _RoomSection extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  u.isAllotted ? u.roomLabel! : 'No room allotted',
+                  u.isAllotted
+                      ? u.roomLabel!
+                      : hostelOnly
+                      ? u.hostelLabel!
+                      : 'No room allotted',
                   style: const TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.w700,
@@ -1049,11 +1248,10 @@ class _RoomSection extends StatelessWidget {
                 Text(
                   u.isAllotted
                       ? 'Allotted room'
+                      : hostelOnly
+                      ? 'Assigned to this hostel — no room yet'
                       : 'This person hasn\'t been given a bed yet.',
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    color: AppColors.textMuted,
-                  ),
+                  style: TextStyle(fontSize: 12.5, color: AppColors.textMuted),
                 ),
               ],
             ),
@@ -1071,15 +1269,89 @@ class _RoomSection extends StatelessWidget {
                   style: TextStyle(color: AppColors.danger),
                 ),
               ),
-            ] else
+            ] else ...[
+              if (hostelOnly)
+                TextButton(
+                  onPressed: () => _removeFromHostel(context, u),
+                  child: Text(
+                    'Remove from hostel',
+                    style: TextStyle(color: AppColors.danger),
+                  ),
+                )
+              else
+                TextButton(
+                  onPressed: () => _assignHostel(context, u),
+                  child: const Text('Assign hostel'),
+                ),
+              const SizedBox(width: 4),
               FilledButton(
                 onPressed: () => onAllot(false),
                 child: const Text('Allot room'),
               ),
+            ],
           ],
         ],
       ),
     );
+  }
+
+  Future<void> _assignHostel(BuildContext context, AppUser u) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final hostel = await showDialog<Hostel>(
+      context: context,
+      builder: (_) => _HostelPickerDialog(student: u),
+    );
+    if (hostel == null) return;
+
+    try {
+      await AllotmentService.instance.assignHostelOnly(
+        collegeId: u.collegeId,
+        student: u,
+        hostel: hostel,
+      );
+      messenger.showSnackBar(
+        SnackBar(content: Text('Assigned to ${hostel.label}')),
+      );
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(_describe(e))));
+    }
+  }
+
+  Future<void> _removeFromHostel(BuildContext context, AppUser u) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: Text('Remove ${u.name} from ${u.hostelLabel}?'),
+        content: const Text(
+          'They will no longer be recorded as belonging to this hostel.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(c, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppColors.danger),
+            onPressed: () => Navigator.pop(c, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    try {
+      await AllotmentService.instance.unassignHostelOnly(
+        collegeId: u.collegeId,
+        student: u,
+      );
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Removed from hostel')),
+      );
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(_describe(e))));
+    }
   }
 
   Future<void> _vacate(BuildContext context, AppUser u) async {
@@ -1107,7 +1379,10 @@ class _RoomSection extends StatelessWidget {
     if (ok != true) return;
 
     try {
-      await AllotmentService.instance.vacate(collegeId: u.collegeId, student: u);
+      await AllotmentService.instance.vacate(
+        collegeId: u.collegeId,
+        student: u,
+      );
       messenger.showSnackBar(const SnackBar(content: Text('Room vacated')));
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text(_describe(e))));
@@ -1116,6 +1391,101 @@ class _RoomSection extends StatelessWidget {
 
   static String _describe(Object e) =>
       e is AllotmentFailure ? e.message : AuthService.describeError(e);
+}
+
+/// Pick a hostel with no room — the lightweight counterpart to
+/// [AllotRoomView] for colleges that record hostel membership before rooms
+/// are finalised. Same eligible-but-disabled-with-a-reason chip pattern.
+class _HostelPickerDialog extends StatefulWidget {
+  final AppUser student;
+  const _HostelPickerDialog({required this.student});
+
+  @override
+  State<_HostelPickerDialog> createState() => _HostelPickerDialogState();
+}
+
+class _HostelPickerDialogState extends State<_HostelPickerDialog> {
+  Hostel? _hostel;
+
+  @override
+  Widget build(BuildContext context) {
+    final collegeId = widget.student.collegeId;
+    return AlertDialog(
+      title: Text('Assign ${widget.student.name} to a hostel'),
+      content: SizedBox(
+        width: 420,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Records which hostel they belong to, with no room chosen '
+              'yet — allot a bed separately once one\'s free.',
+              style: TextStyle(fontSize: 12.5, color: AppColors.textMuted),
+            ),
+            const SizedBox(height: 14),
+            StreamBuilder<List<Hostel>>(
+              stream: HostelService.instance.watchHostels(collegeId),
+              builder: (context, snap) {
+                if (!snap.hasData) {
+                  return const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 20),
+                    child: Center(child: CircularProgressIndicator()),
+                  );
+                }
+                final hostels = snap.data!;
+                if (hostels.isEmpty) {
+                  return Text(
+                    'No hostels exist yet.',
+                    style: TextStyle(color: AppColors.textMuted),
+                  );
+                }
+                return Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: hostels.map((h) {
+                    final eligible = AllotmentService.genderAllows(
+                      h.gender,
+                      widget.student.gender,
+                    );
+                    final selected = _hostel?.id == h.id;
+                    final label = h.code.trim().isEmpty
+                        ? h.name
+                        : h.code.trim().toUpperCase();
+                    return Tooltip(
+                      message: eligible
+                          ? h.name
+                          : '${h.name} · ${h.gender.label} hostel — '
+                                'not eligible',
+                      child: ChoiceChip(
+                        label: Text(label),
+                        selected: selected,
+                        onSelected: eligible
+                            ? (_) => setState(() => _hostel = h)
+                            : null,
+                      ),
+                    );
+                  }).toList(),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _hostel == null
+              ? null
+              : () => Navigator.pop(context, _hostel),
+          child: const Text('Assign'),
+        ),
+      ],
+    );
+  }
 }
 
 // ------------------------------ small pieces ------------------------------

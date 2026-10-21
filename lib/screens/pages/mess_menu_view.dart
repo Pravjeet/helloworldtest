@@ -161,7 +161,7 @@ class _MessMenuViewState extends State<MessMenuView> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Padding(
-                              padding: const EdgeInsets.only(top: 5, right: 10),
+                              padding: EdgeInsets.only(top: 5, right: 10),
                               child: Icon(
                                 Icons.circle,
                                 size: 5,
@@ -192,10 +192,7 @@ class _MessMenuViewState extends State<MessMenuView> {
               Text(
                 'Last updated ${_formatDate(menu.updatedAt!)}'
                 '${menu.updatedByName != null ? ' by ${menu.updatedByName}' : ''}',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: AppColors.textMuted,
-                ),
+                style: TextStyle(fontSize: 12, color: AppColors.textMuted),
               ),
             ],
           ],
@@ -274,8 +271,12 @@ class _MessMenuViewState extends State<MessMenuView> {
         byName: me.name,
       );
       messenger.showSnackBar(
-        const SnackBar(content: Text('Menu published — edit any meal to '
-            'match your mess')),
+        const SnackBar(
+          content: Text(
+            'Menu published — edit any meal to '
+            'match your mess',
+          ),
+        ),
       );
     } catch (e) {
       messenger.showSnackBar(
@@ -291,9 +292,7 @@ class _MessMenuViewState extends State<MessMenuView> {
   Future<void> _edit(MessMenu menu, Meal meal) async {
     final me = Session.of(context).user;
     final messenger = ScaffoldMessenger.of(context);
-    final controller = TextEditingController(
-      text: menu.item(_day, meal) ?? '',
-    );
+    final controller = TextEditingController(text: menu.item(_day, meal) ?? '');
 
     final value = await showDialog<String>(
       context: context,
