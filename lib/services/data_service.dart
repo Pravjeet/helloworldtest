@@ -440,11 +440,15 @@ class DataService {
     final snapshot = await _db.collection('users').doc(user.uid).get();
     final before = snapshot.data();
 
-    final auth = await AuthService.instance.deleteAuthAccount(
-      email: user.email,
-      candidatePasswords: derivedPasswordsFor(user),
-      app: provisioningApp,
-    );
+    // A record-only student has no login to remove — and trying would cost a
+    // throttled sign-in attempt per person for nothing.
+    final auth = !user.hasLogin
+        ? AuthDeleteResult.alreadyGone
+        : await AuthService.instance.deleteAuthAccount(
+            email: user.email,
+            candidatePasswords: derivedPasswordsFor(user),
+            app: provisioningApp,
+          );
 
     var vacated = false;
     if (user.isAllotted) {
@@ -618,7 +622,11 @@ class DataService {
     FirebaseApp? provisioning;
 
     try {
-      provisioning = await AuthService.instance.openProvisioningApp();
+      // Only when someone in the batch actually has a login: opening one is
+      // a whole extra Firebase app, wasted on a batch of record-only students.
+      if (users.any((u) => u.hasLogin && !u.isSuperAdmin)) {
+        provisioning = await AuthService.instance.openProvisioningApp();
+      }
 
       for (final user in users) {
         if (isCancelled?.call() ?? false) {

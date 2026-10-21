@@ -152,13 +152,18 @@ class ResetService {
     var accountsDeleted = 0;
     final accountsKept = <String>[];
     var accountsStageFailed = false;
+    // Record-only students never had a login, so they start out counted as
+    // "login gone" — their profiles go in step 1 below, whatever happens to
+    // the sign-in stage.
+    final noLogin = targets.where((u) => !u.hasLogin).toList();
+    final withLogin = targets.where((u) => u.hasLogin).toList();
     // Filled as each login goes, outside the try, so a Stop or a crash part
     // way through still knows exactly whose login is already gone.
-    final removed = <AppUser>[];
-    onProgress?.call(ResetStage.accounts, 0, targets.length);
+    final removed = <AppUser>[...noLogin];
+    onProgress?.call(ResetStage.accounts, 0, withLogin.length);
     try {
       final r = await _deleteSignInAccounts(
-        targets,
+        withLogin,
         onRemoved: removed.add,
         onProgress: (done, total) =>
             onProgress?.call(ResetStage.accounts, done, total),
@@ -169,7 +174,7 @@ class ResetService {
     } catch (e) {
       failures.add('Sign-in accounts: $e');
       accountsStageFailed = true;
-      accountsDeleted = removed.length;
+      accountsDeleted = removed.length - noLogin.length;
     }
 
     // ------------------------------------------------ profiles

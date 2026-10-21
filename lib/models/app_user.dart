@@ -124,6 +124,21 @@ class AppUser {
   /// as the cache key so a replaced photo is fetched fresh.
   final DateTime? photoUpdatedAt;
 
+  /// Whether this person can sign in. False for students added by the bulk
+  /// importer, which writes the record only — the college runs this app for
+  /// staff, and a thousand sign-in accounts would only be throttled into
+  /// existence for nobody to use. A Super Admin turns one into a login later
+  /// from the student's record (see `LoginAccountService`).
+  ///
+  /// Absent on every document written before this existed, all of which were
+  /// created alongside a real account — hence the default of true.
+  final bool hasLogin;
+
+  /// Set while "Create login account" is part-way through: the sign-in account
+  /// exists under this uid, but the record has not finished moving to it.
+  /// Running it again resumes from here rather than making a second account.
+  final String? pendingLoginUid;
+
   const AppUser({
     required this.uid,
     required this.name,
@@ -168,6 +183,8 @@ class AppUser {
     this.allottedAt,
     this.managedHostelIds = const [],
     this.photoUpdatedAt,
+    this.hasLogin = true,
+    this.pendingLoginUid,
   });
 
   factory AppUser.fromMap(String uid, Map<String, dynamic> m) {
@@ -219,6 +236,8 @@ class AppUser {
           .map((e) => e.toString())
           .toList(),
       photoUpdatedAt: (m['photoUpdatedAt'] as Timestamp?)?.toDate(),
+      hasLogin: m['hasLogin'] as bool? ?? true,
+      pendingLoginUid: m['pendingLoginUid'] as String?,
     );
   }
 

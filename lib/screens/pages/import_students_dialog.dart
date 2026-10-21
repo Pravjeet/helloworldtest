@@ -526,29 +526,6 @@ class _PreviewStep extends StatelessWidget {
         ],
         const SizedBox(height: 12),
         Expanded(child: _SheetGrid(plan: plan)),
-        if (plan.creates > 40) ...[
-          const SizedBox(height: 10),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(11),
-            decoration: BoxDecoration(
-              color: AppColors.warningSoft,
-              borderRadius: BorderRadius.circular(9),
-            ),
-            child: Text(
-              '${plan.creates} new accounts is a lot to create from a browser. '
-              'Firebase quotas this, and if it pushes back the importer drops '
-              'to creating them one at a time — so expect it to take a while. '
-              'Any rows that still fail are listed at the end, and re-running '
-              'is safe.',
-              style: const TextStyle(
-                fontSize: 12,
-                color: Color(0xFF92400E),
-                height: 1.4,
-              ),
-            ),
-          ),
-        ],
       ],
     );
   }
@@ -999,9 +976,10 @@ class _RunStep extends StatelessWidget {
               borderRadius: BorderRadius.circular(10),
             ),
             child: const Text(
-              'New students sign in with their registration number, and their '
-              'starting password IS their registration number. Tell them to '
-              'change it from My Profile after the first login.',
+              'New students were added as records only — they have no sign-in '
+              'account yet. Everything else (filters, rooms, fines, office '
+              'orders) works for them as normal. To let one sign in, a Super '
+              'Admin opens their record and uses "Create login account".',
               style: TextStyle(
                 fontSize: 12.5,
                 color: Color(0xFF075985),
@@ -1012,7 +990,7 @@ class _RunStep extends StatelessWidget {
         if (o.allotmentIssues.isNotEmpty) ...[
           const SizedBox(height: 14),
           const Text(
-            'Accounts were created, but these rooms could not be allotted:',
+            'Students were added, but these rooms could not be allotted:',
             style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
           ),
           const SizedBox(height: 6),

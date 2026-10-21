@@ -88,6 +88,17 @@ service cloud.firestore {
         .hasOnly(['status', 'updatedAt']);
     }
 
+    // "Create login account" (LoginAccountService). A student imported as a
+    // record only has a random id; their new sign-in account gets another,
+    // so everything naming them moves to it. Super Admin only, and only the
+    // fields that hold the student's id may change — the amount of a fine,
+    // or who issued an order, stays exactly as it was.
+    function onlyStudentIdMove(fields) {
+      return isSuperAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(fields);
+    }
+
     // ---------------- colleges ----------------
 
     match /colleges/{collegeId} {
@@ -344,12 +355,16 @@ service cloud.firestore {
       // Deciding a request. The author is deliberately NOT allowed here:
       // approving your own leave would be the whole point of the module
       // defeated.
-      allow update: if sameCollege(collegeId)
-                    && hasPerm('requests.approve')
-                    && resource.data.raisedByUid != request.auth.uid
-                    && request.resource.data.raisedByUid
-                       == resource.data.raisedByUid
-                    && request.resource.data.status != 'pending';
+      allow update: if sameCollege(collegeId) && (
+                      (
+                        hasPerm('requests.approve')
+                        && resource.data.raisedByUid != request.auth.uid
+                        && request.resource.data.raisedByUid
+                           == resource.data.raisedByUid
+                        && request.resource.data.status != 'pending'
+                      )
+                      || onlyStudentIdMove(['raisedByUid'])
+                    );
 
       // Withdrawing your own, but only while untouched.
       // Staff who triage requests may also remove any request outright —
@@ -462,6 +477,14 @@ service cloud.firestore {
                            && request.resource.data.recordedByUid
                               == request.auth.uid;
 
+      // The one exception: a record re-keyed onto a student's new sign-in
+      // account keeps the name of whoever originally recorded it. Fee ids
+      // are `{period}_{uid}`, so the move is a create under the new id (and
+      // a delete of the old one, covered below).
+      allow create: if sameCollege(collegeId)
+                    && isSuperAdmin()
+                    && recordId.matches('.*_' + request.resource.data.studentUid);
+
       allow delete: if sameCollege(collegeId) && hasPerm('fees.manage');
     }
 
@@ -502,12 +525,17 @@ service cloud.firestore {
 
       // Settling. The amount and who it is against are immutable — marking a
       // fine paid must not be a back door to editing what was owed.
-      allow update: if sameCollege(collegeId)
-                    && hasPerm('fines.manage')
-                    && request.resource.data.studentUid
-                       == resource.data.studentUid
-                    && request.resource.data.amount == resource.data.amount
-                    && request.resource.data.status != 'pending';
+      allow update: if sameCollege(collegeId) && (
+                      (
+                        hasPerm('fines.manage')
+                        && request.resource.data.studentUid
+                           == resource.data.studentUid
+                        && request.resource.data.amount
+                           == resource.data.amount
+                        && request.resource.data.status != 'pending'
+                      )
+                      || onlyStudentIdMove(['studentUid'])
+                    );
 
       // Deleting. The app itself only ever offers this for a fine raised in
       // error (still pending) — FineService.remove enforces that in code —
@@ -585,8 +613,12 @@ service cloud.firestore {
                             )
                        );
 
-      // No updates: an office order printed wrong is deleted and re-published,
-      // same as a notice.
+      // No edits: an office order printed wrong is deleted and re-published,
+      // same as a notice. The only update is repointing a student at their
+      // new sign-in account — who the order names, not what it says.
+      allow update: if sameCollege(collegeId)
+                    && onlyStudentIdMove(['students', 'studentUids', 'studentUid']);
+
       allow delete: if sameCollege(collegeId)
                     && (
                       isSuperAdmin()

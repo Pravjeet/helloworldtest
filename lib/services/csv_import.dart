@@ -1,7 +1,6 @@
 import 'dart:async';
 
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../core/identity.dart';
 import '../models/app_role.dart';
@@ -348,6 +347,15 @@ ImportPlan analyseImport({
   }
 
   final byEmail = {for (final u in existingUsers) u.email.toLowerCase(): u};
+  // Students are matched on their registration number first: a record-only
+  // student has no sign-in account to anchor them, and the number is what the
+  // college itself uses to tell students apart. Email still catches staff and
+  // anyone whose sheet row has no number.
+  final byRegNo = <String, AppUser>{
+    for (final u in existingUsers)
+      if ((u.enrollmentNo ?? '').trim().isNotEmpty)
+        u.enrollmentNo!.trim().toLowerCase(): u,
+  };
   final seen = <String>{};
   final result = <ImportRow>[];
 
@@ -453,7 +461,8 @@ ImportPlan analyseImport({
       warnings.add('No role called "$wantedRole" — using ${role.name} instead');
     }
 
-    final existing = byEmail[authEmail];
+    final existing =
+        (reg.isEmpty ? null : byRegNo[reg.toLowerCase()]) ?? byEmail[authEmail];
     if (existing == null && role == null) {
       problems.add(
         'This workspace has no assignable roles. Create one under '
@@ -536,7 +545,7 @@ String? _normaliseGender(String raw) {
 /// counts its own students, so the numbers always mean "students".
 enum ImportPhase {
   updating('Updating existing students'),
-  accounts('Creating accounts'),
+  accounts('Adding students'),
   hostels('Assigning hostels'),
   rooms('Allotting rooms');
 
@@ -582,24 +591,6 @@ class ImportOutcome {
 const Duration kRowTimeout = Duration(seconds: 30);
 const Duration kAllotTimeout = Duration(seconds: 20);
 
-/// Firebase throttles rapid account creation from a browser. When it does, the
-/// row is not broken — it just needs a moment. Backing off and retrying
-/// recovers rows that would otherwise be reported as failures.
-const List<Duration> kThrottleBackoff = [
-  Duration(seconds: 3),
-  Duration(seconds: 8),
-  Duration(seconds: 20),
-];
-
-bool _isThrottle(Object e) {
-  final code = e is FirebaseAuthException ? e.code : '';
-  if (code == 'too-many-requests') return true;
-  final text = e.toString().toLowerCase();
-  return text.contains('too-many-requests') ||
-      text.contains('too many attempts') ||
-      text.contains('quota');
-}
-
 /// How many profile updates to run at once.
 ///
 /// These are plain Firestore writes — no Auth involved, and nothing Firebase
@@ -607,15 +598,9 @@ bool _isThrottle(Object e) {
 /// is the one number here that can be raised without thinking hard about it.
 const int kUpdateConcurrency = 20;
 
-/// How many accounts to create at once, *before* Firebase objects.
-///
-/// Deliberately lower than the Node importer's 10. That script holds a
-/// service-account key and talks to the Admin endpoint; this runs in a
-/// browser and must go through the public sign-up door, which is quota'd per
-/// project. Six is a bet that the quota is above one-at-a-time — and
-/// [runImport] gives the bet back the moment Firebase says no, by collapsing
-/// to a single lane for the rest of the run.
-const int kCreateConcurrency = 6;
+/// How many new student records go in one batch commit. Firestore allows 500
+/// writes per batch; this leaves headroom.
+const int kCreateBatchSize = 400;
 
 /// What one pooled task learned about whether the pool should stay wide.
 enum LaneVerdict {
@@ -685,11 +670,10 @@ Future<void> runPooled<T>({
 ///
 ///  * **Updates** touch Firestore only. Nothing throttles them, so they run
 ///    in parallel waves of [kUpdateConcurrency].
-///  * **Creates** go through the public sign-up endpoint, which Firebase
-///    quotas per project. They run on [kCreateConcurrency] lanes that
-///    **collapse to one** the first time a throttle is seen, so a generous
-///    quota gets used and a tight one gets today's behaviour instead of a
-///    project-wide block.
+///  * **Creates** are profile documents only — no sign-in accounts, so
+///    nothing for Firebase to throttle. They go in batches of
+///    [kCreateBatchSize]; a login is made later, per student, from their
+///    record (see `LoginAccountService`).
 ///    A new student named against a hostel with no room gets the hostel in
 ///    that same create write, so most of a typical sheet needs nothing more.
 ///  * **Hostel-only for existing students** runs in parallel waves — no room,
@@ -833,95 +817,60 @@ Future<ImportOutcome> runImport({
     }
   }
 
-  // ---- phase 2: account creation, on a self-limiting pool ----------------
+  // ---- phase 2: new students, as records only, in batches ---------------
+  //
+  // No sign-in accounts. The college uses this app for staff; a student's
+  // login is made later, one at a time, by a Super Admin from their record
+  // (see LoginAccountService). That turns what was the throttled, minutes-long
+  // part of an import into a handful of batch commits — a thousand students
+  // is three of them.
+  //
+  // Each batch commits whole or not at all, so a failed batch reports its
+  // rows and the next one still runs. Re-running the file afterwards matches
+  // what did land by registration number, so nothing is duplicated.
+  final users = FirebaseFirestore.instance.collection('users');
+  for (var i = 0; i < creates.length; i += kCreateBatchSize) {
+    if (cancelled()) {
+      stoppedEarly = true;
+      break;
+    }
+    final slice = creates.sublist(
+      i,
+      (i + kCreateBatchSize).clamp(0, creates.length),
+    );
+    onProgress(
+      ImportPhase.accounts,
+      studentsDone,
+      work.length,
+      slice.first.name,
+    );
 
-  final lanes = creates.isEmpty ? 0 : (cancelled() ? 0 : kCreateConcurrency);
-
-  // One provisioning app PER LANE. Sharing a single FirebaseApp across
-  // concurrent creates would have them fighting over one Auth session and its
-  // persistence; a separate instance per lane keeps them from touching at
-  // all. Still created once per run, never per row — that was the original
-  // cost that dwarfed everything else.
-  final apps = <FirebaseApp>[];
-  try {
-    for (var i = 0; i < lanes; i++) {
-      apps.add(await AuthService.instance.openProvisioningApp());
+    final batch = FirebaseFirestore.instance.batch();
+    final made = <ImportRow, AppUser>{};
+    for (final row in slice) {
+      final ref = users.doc();
+      final profile = recordOnlyProfile(
+        row,
+        uid: ref.id,
+        collegeId: collegeId,
+        withHostel: hostelAtCreate.contains(row),
+      );
+      batch.set(ref, {...profile, 'createdAt': FieldValue.serverTimestamp()});
+      made[row] = AppUser.fromMap(ref.id, profile);
     }
 
-    await runPooled<ImportRow>(
-      items: creates,
-      lanes: lanes,
-      isCancelled: cancelled,
-      onStopped: () => stoppedEarly = true,
-      task: (row, id) async {
-        // Report before the work, so the label moves the moment a row starts
-        // rather than only once it finishes.
-        onProgress(ImportPhase.accounts, studentsDone, work.length, row.name);
-
-        var throttled = false;
-        try {
-          // Detail fields ride along in the same document write — no second
-          // round trip, and no re-query to find the uid we were just handed.
-          // Retried on throttling only: a duplicate email or a bad password
-          // is not going to fix itself by waiting.
-          for (var attempt = 0; ; attempt++) {
-            try {
-              resolved[row] = await AuthService.instance
-                  .createSubUser(
-                    name: row.values['name']!,
-                    email: row.authEmail,
-                    password: Identity.derivedPassword(
-                      row.registrationNo.isNotEmpty
-                          ? row.registrationNo
-                          : row.authEmail,
-                    ),
-                    collegeId: collegeId,
-                    roleId: row.role!.id,
-                    roleName: row.role!.name,
-                    phone: row.values['phone'],
-                    gender: row.values['gender'],
-                    enrollmentNo: row.registrationNo.isEmpty
-                        ? null
-                        : row.registrationNo,
-                    extra: {
-                      ..._detailFields(row),
-                      if (hostelAtCreate.contains(row)) ...{
-                        'hostelId': row.hostel!.id,
-                        'hostelName': row.hostel!.name,
-                      },
-                    },
-                    app: apps[id],
-                  )
-                  .timeout(kRowTimeout);
-              break;
-            } catch (e) {
-              if (!_isThrottle(e)) rethrow;
-              // The signal this whole phase is built around: stop widening.
-              throttled = true;
-              if (attempt >= kThrottleBackoff.length) rethrow;
-              final wait = kThrottleBackoff[attempt];
-              onProgress(
-                ImportPhase.accounts,
-                studentsDone,
-                work.length,
-                'Firebase is throttling — waiting ${wait.inSeconds}s, then '
-                'retrying ${row.name}',
-              );
-              await Future<void>.delayed(wait);
-            }
-          }
-          created++;
-          if (hostelAtCreate.contains(row)) hostelOnly++;
-        } catch (e) {
-          recordFailure(row, e);
-        }
-        studentDone(row.name);
-        return throttled ? LaneVerdict.narrow : LaneVerdict.ok;
-      },
-    );
-  } finally {
-    for (final app in apps) {
-      await AuthService.instance.closeProvisioningApp(app);
+    try {
+      await batch.commit().timeout(kRowTimeout);
+      resolved.addAll(made);
+      created += slice.length;
+      hostelOnly += slice.where(hostelAtCreate.contains).length;
+    } catch (e) {
+      for (final row in slice) {
+        recordFailure(row, e);
+      }
+    }
+    for (final row in slice) {
+      studentDone(row.name);
     }
   }
 
@@ -1062,6 +1011,40 @@ Future<ImportOutcome> runImport({
     stoppedEarly: stoppedEarly,
     remaining: work.length - studentsDone,
   );
+}
+
+/// The profile document a new student gets from an import: everything on
+/// their row, with no sign-in account behind it (`hasLogin: false`).
+///
+/// `email` is still filled in — the typed one, or the synthetic one built
+/// from the registration number. Nobody signs in with it yet, but it is what
+/// "Create login account" will make the login for, and what the roster shows.
+Map<String, dynamic> recordOnlyProfile(
+  ImportRow row, {
+  required String uid,
+  required String collegeId,
+  bool withHostel = false,
+}) {
+  final profile = AppUser(
+    uid: uid,
+    name: row.values['name']!.trim(),
+    email: row.authEmail,
+    collegeId: collegeId,
+    roleId: row.role!.id,
+    roleName: row.role!.name,
+    phone: row.values['phone'],
+    gender: row.values['gender'],
+    enrollmentNo: row.registrationNo.isEmpty ? null : row.registrationNo,
+  );
+  return {
+    ...profile.toMap(),
+    ..._detailFields(row),
+    if (withHostel && row.hostel != null) ...{
+      'hostelId': row.hostel!.id,
+      'hostelName': row.hostel!.name,
+    },
+    'hasLogin': false,
+  };
 }
 
 Map<String, dynamic> _detailFields(ImportRow row) {

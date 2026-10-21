@@ -79,6 +79,10 @@ class _UsersPageState extends State<UsersPage> {
 
   static const _kUnallotted = '__none__';
 
+  /// Null = anyone; true = can sign in; false = record only (see
+  /// [AppUser.hasLogin]).
+  bool? _loginFilter;
+
   /// Rendered a page at a time — with a few thousand students imported,
   /// building a row for every match at once is what makes the screen crawl
   /// or crash. Reset to 0 whenever a filter changes, so "page 3" of the old
@@ -165,10 +169,13 @@ class _UsersPageState extends State<UsersPage> {
                       roomQuery.isEmpty ||
                       (u.roomNumber?.toLowerCase().contains(roomQuery) ??
                           false);
+                  final matchesLogin =
+                      _loginFilter == null || u.hasLogin == _loginFilter;
                   return matchesQuery &&
                       matchesRole &&
                       matchesHostel &&
-                      matchesRoom;
+                      matchesRoom &&
+                      matchesLogin;
                 }).toList();
 
                 // Clamp defensively rather than writing back to `_page` here —
@@ -390,6 +397,37 @@ class _UsersPageState extends State<UsersPage> {
                                 ),
                               ),
                               const SizedBox(width: 12),
+                              SizedBox(
+                                width: 170,
+                                child: DropdownButtonFormField<bool?>(
+                                  key: ValueKey('login-$_loginFilter'),
+                                  initialValue: _loginFilter,
+                                  isExpanded: true,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Login',
+                                    isDense: true,
+                                  ),
+                                  items: const [
+                                    DropdownMenuItem<bool?>(
+                                      value: null,
+                                      child: Text('Anyone'),
+                                    ),
+                                    DropdownMenuItem<bool?>(
+                                      value: true,
+                                      child: Text('Has login'),
+                                    ),
+                                    DropdownMenuItem<bool?>(
+                                      value: false,
+                                      child: Text('No login'),
+                                    ),
+                                  ],
+                                  onChanged: (v) => setState(() {
+                                    _loginFilter = v;
+                                    _page = 0;
+                                  }),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
                               Text(
                                 filtered.isEmpty
                                     ? '0 of ${all.length}'
@@ -405,6 +443,7 @@ class _UsersPageState extends State<UsersPage> {
                               const Spacer(),
                               if (_hostelFilter != null ||
                                   _roomFilter != null ||
+                                  _loginFilter != null ||
                                   _roleFilter != 'All' ||
                                   _query.isNotEmpty)
                                 TextButton.icon(
@@ -414,6 +453,7 @@ class _UsersPageState extends State<UsersPage> {
                                     setState(() {
                                       _hostelFilter = null;
                                       _roomFilter = null;
+                                      _loginFilter = null;
                                       _roleFilter = 'All';
                                       _query = '';
                                       _page = 0;
@@ -518,6 +558,8 @@ class _UsersPageState extends State<UsersPage> {
   String get _scopeLabel {
     final parts = <String>[
       if (_roleFilter != 'All') 'role "$_roleFilter"' else 'all roles',
+      if (_loginFilter == true) 'has login',
+      if (_loginFilter == false) 'no login',
       if (_query.trim().isNotEmpty) 'search "${_query.trim()}"',
     ];
     return parts.join(' · ');
@@ -679,6 +721,15 @@ class _UserRow extends StatelessWidget {
                       ),
               ),
             ),
+            if (!user.hasLogin)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: StatusPill(
+                  'NO LOGIN',
+                  AppColors.warning,
+                  AppColors.warningSoft,
+                ),
+              ),
             if (!user.isActive)
               StatusPill('DEACTIVATED', AppColors.danger, AppColors.dangerSoft),
             const SizedBox(width: 8),
@@ -758,6 +809,7 @@ class _UserRow extends StatelessWidget {
           // still being the derived one, which is knowable up front — so say
           // it in the dialog rather than surprising them afterwards.
           final canRemoveLogin =
+              !user.hasLogin ||
               (user.enrollmentNo ?? '').trim().isNotEmpty ||
               Identity.isSynthetic(user.email);
 
@@ -786,7 +838,10 @@ class _UserRow extends StatelessWidget {
                         borderRadius: BorderRadius.circular(9),
                       ),
                       child: Text(
-                        canRemoveLogin
+                        !user.hasLogin
+                            ? 'They have no sign-in account, so only their '
+                                  'record is removed.'
+                            : canRemoveLogin
                             ? 'Their sign-in account will also be removed, so '
                                   'the registration number can be re-imported '
                                   'cleanly.\n\nIf they have changed their '

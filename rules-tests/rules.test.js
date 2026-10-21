@@ -1245,3 +1245,96 @@ describe('ID photos — Super Admin', () => {
     console.log('      [e] users stamp alone :', usersOnly);
   });
 });
+
+describe('record-only students and "Create login account"', () => {
+  const col = (db, name) => db.collection('colleges').doc(COLLEGE_A).collection(name);
+
+  async function seedAdmins() {
+    await seed(COLLEGE_A, {
+      wardenRole: ['fines.viewAll', 'fines.manage', 'fees.manage', 'fees.viewAll', 'users.create', 'requests.approve', 'requests.viewAll'],
+    });
+    await seedUser(COLLEGE_A, 'admin', null, { isSuperAdmin: true });
+    await seedUser(COLLEGE_A, 'warden-a', 'warden');
+  }
+
+  async function seedAs(path, id, data) {
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      await col(ctx.firestore(), path).doc(id).set(data);
+    });
+  }
+
+  it('staff with users.create can import a student as a record only', async () => {
+    await seedAdmins();
+    await assertSucceeds(
+      asUser('warden-a').collection('users').doc('random-id').set({
+        name: 'Asha', email: '2110910@homihostel.local', collegeId: COLLEGE_A,
+        roleId: 'student', isSuperAdmin: false, isActive: true, hasLogin: false,
+      }),
+    );
+  });
+
+  it('a Super Admin can repoint a settled fine at the new id', async () => {
+    await seedAdmins();
+    await seedAs('fines', 'f1', { studentUid: 'old', amount: 500, status: 'paid', imposedByUid: 'warden-a', officeOrderId: 'o1' });
+    await assertSucceeds(col(asUser('admin'), 'fines').doc('f1').update({ studentUid: 'new' }));
+  });
+
+  it('the move cannot also change what was owed', async () => {
+    await seedAdmins();
+    await seedAs('fines', 'f1', { studentUid: 'old', amount: 500, status: 'paid', imposedByUid: 'warden-a', officeOrderId: 'o1' });
+    await assertFails(col(asUser('admin'), 'fines').doc('f1').update({ studentUid: 'new', amount: 1 }));
+  });
+
+  it('a warden with fines.manage still cannot move a fine to someone else', async () => {
+    await seedAdmins();
+    await seedAs('fines', 'f1', { studentUid: 'old', amount: 500, status: 'pending', imposedByUid: 'warden-a', officeOrderId: 'o1' });
+    await assertFails(col(asUser('warden-a'), 'fines').doc('f1').update({ studentUid: 'new', status: 'paid' }));
+  });
+
+  it('a Super Admin can repoint the students an office order names, and nothing else', async () => {
+    await seedAdmins();
+    await seedAs('officeOrders', 'o1', {
+      title: 'Warning', postedByUid: 'warden-a', students: [{ uid: 'old', name: 'A' }], studentUids: ['old'],
+    });
+    const db = asUser('admin');
+    await assertSucceeds(col(db, 'officeOrders').doc('o1').update({
+      students: [{ uid: 'new', name: 'A' }], studentUids: ['new'],
+    }));
+    await assertFails(col(db, 'officeOrders').doc('o1').update({ title: 'Edited' }));
+  });
+
+  it('nobody else may update an office order', async () => {
+    await seedAdmins();
+    await seedAs('officeOrders', 'o1', {
+      title: 'Warning', postedByUid: 'warden-a', students: [{ uid: 'old', name: 'A' }], studentUids: ['old'],
+    });
+    await assertFails(col(asUser('warden-a'), 'officeOrders').doc('o1').update({ studentUids: ['new'] }));
+  });
+
+  it('a Super Admin can re-key a fee record, keeping who recorded it', async () => {
+    await seedAdmins();
+    await assertSucceeds(col(asUser('admin'), 'feeRecords').doc('2026-08_new').set({
+      studentUid: 'new', amount: 3000, recordedByUid: 'warden-a',
+    }));
+  });
+
+  it('the re-keyed fee record must be filed under the student it names', async () => {
+    await seedAdmins();
+    await assertFails(col(asUser('admin'), 'feeRecords').doc('2026-08_someone-else').set({
+      studentUid: 'new', amount: 3000, recordedByUid: 'warden-a',
+    }));
+  });
+
+  it('a warden still cannot record a fee in somebody else\'s name', async () => {
+    await seedAdmins();
+    await assertFails(col(asUser('warden-a'), 'feeRecords').doc('2026-08_new').set({
+      studentUid: 'new', amount: 3000, recordedByUid: 'admin',
+    }));
+  });
+
+  it('a Super Admin can repoint who raised a request', async () => {
+    await seedAdmins();
+    await seedAs('requests', 'r1', { raisedByUid: 'old', status: 'approved' });
+    await assertSucceeds(col(asUser('admin'), 'requests').doc('r1').update({ raisedByUid: 'new' }));
+  });
+});

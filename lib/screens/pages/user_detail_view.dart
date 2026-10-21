@@ -20,6 +20,7 @@ import '../../services/photo_service.dart';
 import '../../widgets/hostel_picker_chips.dart';
 import '../../widgets/student_photo.dart';
 import 'allot_room_view.dart';
+import 'create_login_dialog.dart';
 import 'fines_shared.dart' show FineRow, compactAmount;
 import 'impose_fine_view.dart';
 import 'office_order_detail_dialog.dart';
@@ -58,15 +59,30 @@ class _UserDetailViewState extends State<UserDetailView> {
   /// True while the impose-fine form is showing in place of the details.
   bool _imposingFine = false;
 
+  /// Where the record lives now, once "Create login account" has moved it to
+  /// the new sign-in account's id. Null until then.
+  String? _movedTo;
+
+  String get _uid => _movedTo ?? widget.uid;
+
   @override
   Widget build(BuildContext context) {
     // Watch the document so the room card and header stay live while the form
     // is open — allotting a room updates this page without a reload.
     return StreamBuilder<AppUser?>(
-      stream: AuthService.instance.watchProfile(widget.uid),
-      initialData: widget.initial,
+      key: ValueKey(_uid),
+      stream: AuthService.instance.watchProfile(_uid),
+      initialData: _movedTo == null ? widget.initial : null,
       builder: (context, snap) {
         final user = snap.data;
+        if (user == null &&
+            _movedTo != null &&
+            snap.connectionState == ConnectionState.waiting) {
+          return const Padding(
+            padding: EdgeInsets.all(60),
+            child: Center(child: CircularProgressIndicator()),
+          );
+        }
         if (user == null) {
           return AppCard(
             child: Column(
@@ -103,7 +119,11 @@ class _UserDetailViewState extends State<UserDetailView> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _Header(user: user, onBack: widget.onBack),
+            _Header(
+              user: user,
+              onBack: widget.onBack,
+              onMoved: (uid) => setState(() => _movedTo = uid),
+            ),
             const SizedBox(height: 18),
             _RoomSection(
               user: user,
@@ -120,7 +140,7 @@ class _UserDetailViewState extends State<UserDetailView> {
             // Keyed on uid so switching users rebuilds the controllers with
             // the new person's values instead of keeping the old text.
             _DetailForm(
-              key: ValueKey(widget.uid),
+              key: ValueKey(_uid),
               user: user,
               onDone: widget.onBack,
             ),
@@ -136,7 +156,16 @@ class _UserDetailViewState extends State<UserDetailView> {
 class _Header extends StatefulWidget {
   final AppUser user;
   final VoidCallback onBack;
-  const _Header({required this.user, required this.onBack});
+
+  /// Called with the new uid once a sign-in account has been created and the
+  /// record has moved onto it.
+  final ValueChanged<String> onMoved;
+
+  const _Header({
+    required this.user,
+    required this.onBack,
+    required this.onMoved,
+  });
 
   @override
   State<_Header> createState() => _HeaderState();
@@ -229,10 +258,35 @@ class _HeaderState extends State<_Header> {
     }
   }
 
+  Future<void> _createLogin() async {
+    final actor = Session.of(context).user;
+    final messenger = ScaffoldMessenger.of(context);
+    final newUid = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => CreateLoginDialog(student: widget.user, actor: actor),
+    );
+    if (newUid == null) return;
+    widget.onMoved(newUid);
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          '${widget.user.name} can now sign in as '
+          '${Identity.display(widget.user.email)}',
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final session = Session.of(context);
     final user = widget.user;
+
+    // Only a Super Admin makes sign-in accounts — the same line the rules
+    // draw for moving a record's references.
+    final canCreateLogin =
+        session.user.isSuperAdmin && !user.hasLogin && !user.isSuperAdmin;
 
     // Same line the rules draw: nobody sets their own ID photo (it would
     // defeat the point), and nobody edits the Super Admin.
@@ -332,9 +386,30 @@ class _HeaderState extends State<_Header> {
                     ),
                   ),
                 ],
+                if (canCreateLogin) ...[
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    onPressed: _busy ? null : _createLogin,
+                    icon: const Icon(Icons.key_rounded, size: 17),
+                    label: Text(
+                      user.pendingLoginUid == null
+                          ? 'Create login account'
+                          : 'Finish creating login account',
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
+          if (!user.hasLogin)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: StatusPill(
+                'NO LOGIN',
+                AppColors.warning,
+                AppColors.warningSoft,
+              ),
+            ),
           if (!user.isActive)
             StatusPill('DISABLED', AppColors.danger, AppColors.dangerSoft),
         ],
